@@ -86,7 +86,7 @@ To back up, copy that folder (ideally with the container stopped: `docker compos
 | `APP_PASSWORD` | empty (no password) | Asks for a password in the browser. `/healthz` stays open for health checks. |
 | `OPENAI_API_KEY` | empty (AI off) | Turns on the AI features. |
 | `AI_MODEL` | `gpt-6.1-terra` | OpenAI model for the AI features. |
-| `PORT` | `8080` | Port on the server. Only used by `docker-compose.yml`. Check it's free with `ss -ltn | grep -w :8080` (no output = free). |
+| `PORT` | `8080` | Port on the server. Only used by `docker-compose.yml`. Check it's free with `ss -ltn \| grep -w :8080` (no output = free). |
 | `DATA_DIR` | `/data` | Where the database and photos go inside the container. |
 
 ## Run without Docker (for development)

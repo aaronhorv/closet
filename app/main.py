@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS items (
     color       TEXT NOT NULL DEFAULT '',
     warmth      INTEGER NOT NULL DEFAULT 3,   -- 1 very light .. 5 very warm
     formality   INTEGER NOT NULL DEFAULT 2,   -- 1 casual, 2 smart casual, 3 formal
+    brand       TEXT NOT NULL DEFAULT '',
     tags        TEXT NOT NULL DEFAULT '',
     notes       TEXT NOT NULL DEFAULT '',
     photo       TEXT,
@@ -69,7 +70,7 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 """
 
-DEFAULT_SETTINGS = {"unit": "C", "location_name": "", "lat": "", "lon": "", "outerwear_below": "16"}
+DEFAULT_SETTINGS = {"unit": "C", "location_name": "", "lat": "", "lon": "", "outerwear_below": "16", "ai_prompt": ""}
 
 ITEM_SELECT = """
 SELECT i.*, COUNT(o.id) AS times_worn, MAX(o.worn_on) AS last_worn, AVG(o.rating) AS avg_rating
@@ -165,6 +166,7 @@ def get_settings(conn) -> dict:
         "lat": float(s["lat"]) if s["lat"] else None,
         "lon": float(s["lon"]) if s["lon"] else None,
         "outerwear_below": float(s["outerwear_below"] or 16),
+        "ai_prompt": s["ai_prompt"],
     }
 
 
@@ -200,6 +202,7 @@ def item_form(
     color: str = Form(""),
     warmth: int = Form(3),
     formality: int = Form(2),
+    brand: str = Form(""),
     tags: str = Form(""),
     notes: str = Form(""),
     favorite: bool = Form(False),
@@ -215,6 +218,7 @@ def item_form(
         "color": color.strip()[:40],
         "warmth": min(5, max(1, warmth)),
         "formality": min(3, max(1, formality)),
+        "brand": brand.strip()[:80],
         "tags": tags.strip()[:200],
         "notes": notes.strip()[:1000],
         "favorite": int(favorite),
@@ -540,6 +544,7 @@ class AIOutfitsIn(BaseModel):
 def ai_outfits(body: AIOutfitsIn):
     require_ai()
     with db() as conn:
+        settings = get_settings(conn)
         items = fetch_items(conn, "i.archived = 0")
         existing = [
             [r["item_id"] for r in conn.execute(
@@ -558,7 +563,8 @@ def ai_outfits(body: AIOutfitsIn):
 
     count = 3 if anchor else 5
     try:
-        raw = ai.build_outfits(list(allowed.values()), count, anchor, body.note, existing)
+        raw = ai.build_outfits(list(allowed.values()), count, anchor, body.note, existing,
+                              settings["ai_prompt"])
     except ai.AIError as e:
         raise HTTPException(502, str(e))
 
@@ -590,6 +596,7 @@ class SettingsIn(BaseModel):
     lat: Optional[float] = None
     lon: Optional[float] = None
     outerwear_below: Optional[float] = None
+    ai_prompt: Optional[str] = None
 
 
 @app.get("/api/settings")
@@ -603,6 +610,8 @@ def write_settings(body: SettingsIn):
     data = body.model_dump(exclude_unset=True)
     if "unit" in data and data["unit"] not in ("C", "F"):
         raise HTTPException(400, "Unit must be C or F")
+    if data.get("ai_prompt") is not None:
+        data["ai_prompt"] = data["ai_prompt"].strip()[:1000]
     with db() as conn:
         for k, v in data.items():
             conn.execute("INSERT INTO settings (key, value) VALUES (?, ?) "

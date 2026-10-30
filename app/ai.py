@@ -171,6 +171,8 @@ def _item_line(it: dict) -> str:
         "id": it["id"], "name": it["name"], "category": it["category"], "color": it["color"],
         "warmth": it["warmth"], "formality": it["formality"],
     }
+    if it.get("brand"):
+        slim["brand"] = it["brand"]
     if it.get("tags"):
         slim["tags"] = it["tags"]
     if it.get("notes"):
@@ -186,7 +188,7 @@ def _item_line(it: dict) -> str:
 
 
 def build_outfits(items: list, count: int, anchor: dict = None, note: str = "",
-                  existing: list = None) -> list:
+                  existing: list = None, style: str = "") -> list:
     """Ask the AI for outfits. Returns raw [{name, item_ids, reason}]; the caller validates."""
     parts = ["Closet:", *(_item_line(i) for i in items)]
     if existing:
@@ -194,6 +196,8 @@ def build_outfits(items: list, count: int, anchor: dict = None, note: str = "",
         parts.extend(json.dumps(ids) for ids in existing[:30])
     if anchor:
         parts.append(f"\nEvery outfit must include item {anchor['id']} ({anchor['name']}).")
+    if style.strip():
+        parts.append(f"\nThe user's standing style preferences (follow them unless they break the rules above):\n{style.strip()[:1000]}")
     if note.strip():
         parts.append(f"\nWhat the user wants: {note.strip()[:300]}")
     parts.append(f"\nCreate {count} outfits.")

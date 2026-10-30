@@ -42,7 +42,7 @@
     <!-- CLOSET -->
     <section id="view-closet" class="view" hidden>
       <div class="closet-tools">
-        <input id="search" type="search" placeholder="Search name, color, tag" autocomplete="off">
+        <input id="search" type="search" placeholder="Search name, color, brand, tag" autocomplete="off">
         <button id="add-item-btn" class="btn primary">Add item</button>
       </div>
       <div class="chips" id="cat-chips"></div>
@@ -126,6 +126,9 @@
             <button type="button" data-v="3">Formal</button>
           </div>
         </div>
+        <label class="field">Brand
+          <input name="brand" maxlength="80">
+        </label>
         <label class="field"><span>Tags <span class="small">(comma separated; “waterproof” helps on rainy days)</span></span>
           <input name="tags" maxlength="200" placeholder="work, summer, waterproof">
         </label>
@@ -210,6 +213,9 @@
         </div>
         <label class="field"><span>Add a jacket when it feels colder than (<span id="thresh-unit">°C</span>)</span>
           <input type="number" name="outerwear_below" step="1">
+        </label>
+        <label class="field" id="ai-prompt-field" hidden><span>Outfit instructions for AI <span class="small">(used when the AI creates outfits)</span></span>
+          <textarea name="ai_prompt" rows="4" maxlength="1000" placeholder="e.g. I prefer minimal looks, no shorts for work, I like navy with brown."></textarea>
         </label>
       </div>
       <div class="dlg-foot">

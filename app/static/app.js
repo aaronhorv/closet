@@ -220,7 +220,7 @@ function renderCloset() {
   if (state.filter === 'laundry') list = list.filter((i) => i.in_laundry);
   else if (CAT_LABEL[state.filter]) list = list.filter((i) => i.category === state.filter);
   const q = state.search.trim().toLowerCase();
-  if (q) list = list.filter((i) => [i.name, i.color, i.tags, i.notes].join(' ').toLowerCase().includes(q));
+  if (q) list = list.filter((i) => [i.name, i.color, i.brand, i.tags, i.notes].join(' ').toLowerCase().includes(q));
   list = [...list].sort(byOrder);
 
   const grid = $('#closet-grid');
@@ -286,6 +286,7 @@ function openItem(it = null) {
   f.warmth.value = it?.warmth || 3;
   $('#warmth-label').textContent = WARMTH[f.warmth.value];
   setSeg($('#formality-seg'), it?.formality || 2);
+  f.brand.value = it?.brand || '';
   f.tags.value = it?.tags || '';
   f.notes.value = it?.notes || '';
   f.favorite.checked = !!it?.favorite;
@@ -305,6 +306,7 @@ async function saveItem(e) {
   fd.append('color', f.color.value);
   fd.append('warmth', f.warmth.value);
   fd.append('formality', segValue($('#formality-seg')) || 2);
+  fd.append('brand', f.brand.value);
   fd.append('tags', f.tags.value);
   fd.append('notes', f.notes.value);
   fd.append('favorite', f.favorite.checked ? 'true' : 'false');
@@ -553,6 +555,8 @@ function openSettings() {
   setSeg($('#unit-seg'), s.unit);
   $('#thresh-unit').textContent = `°${s.unit}`;
   f.outerwear_below.value = Math.round(toDisplay(s.outerwear_below));
+  $('#ai-prompt-field').hidden = !state.ai;
+  f.ai_prompt.value = s.ai_prompt || '';
   $('#settings-dialog').showModal();
 }
 async function searchLocation() {
@@ -581,6 +585,7 @@ async function saveSettings(e) {
   // convert the threshold using the unit it was typed in
   const c = unit === 'F' ? (shown - 32) * 5 / 9 : shown;
   const body = { unit, outerwear_below: Math.round(c * 10) / 10 };
+  if (state.ai) body.ai_prompt = f.ai_prompt.value;
   if (pendingLoc) Object.assign(body, { location_name: pendingLoc.label, lat: pendingLoc.lat, lon: pendingLoc.lon });
   state.settings = await api('/api/settings', sendJSON('PUT', body));
   $('#settings-dialog').close();

@@ -1,6 +1,6 @@
 services:
   closet:
-    image: ghcr.io/aaronhorv/outfit-closet:latest
+    image: ghcr.io/aaronhorv/closet:latest
     container_name: closet
     ports:
       - "8080:8080"

@@ -4,7 +4,7 @@ A small self-hosted closet tracker and outfit recommender. It runs as one Docker
 
 ## What it does
 
-- **Closet**: add clothes with a photo, category, main color, warmth (1–5) and formality (casual / smart casual / formal). Mark things as in the laundry, favorite them, or archive them.
+- **Closet**: add clothes with a photo, category, main color, brand, warmth (1–5) and formality (casual / smart casual / formal). Mark things as in the laundry, favorite them, or archive them.
 - **Today**: suggests 3 outfits from clean clothes, using simple rules (no AI):
   - the forecast for your city (free [Open-Meteo](https://open-meteo.com) data, no API key needed)
   - the occasion you pick
@@ -22,8 +22,9 @@ Set `OPENAI_API_KEY` to turn these on. Without it the app works the same, just w
 - **Fill in with AI**: in the Add/Edit item form, after picking a photo. The photo is sent to OpenAI, which fills in name, category, color, warmth, formality and tags. You check them and save.
 - **Build outfits with this**: open an item in the closet. The AI suggests 3 outfits that include it.
 - **Create outfits**: on the Outfits tab. The AI makes 5 outfits from your clean clothes. You can add a note like "work week".
+- **Outfit instructions for AI** (gear icon → Settings): your standing style preferences, e.g. "minimal looks, no shorts for work". They're added to every outfit request, on top of the built-in rules.
 
-Only the photo you're filling in is sent. Outfit building sends item details as text (name, category, color, warmth, formality, tags, notes, wear count, ratings), never photos. The app only keeps outfits that use real, clean items from your closet.
+Only the photo you're filling in is sent. Outfit building sends item details as text (name, category, color, brand, warmth, formality, tags, notes, wear count, ratings), never photos. The app only keeps outfits that use real, clean items from your closet.
 
 The default model is `gpt-6.1-terra`. To use another one, set `AI_MODEL`, for example `gpt-6-luna` (cheaper) or `gpt-6.1-sol` (smarter). Get a key at <https://platform.openai.com/api-keys>.
 
@@ -33,7 +34,7 @@ You need Docker with the compose plugin. Check with `docker compose version`.
 
 ```bash
 mkdir -p ~/closet && cd ~/closet
-curl -O https://raw.githubusercontent.com/aaronhorv/outfit-closet/main/docker-compose.yml
+curl -O https://raw.githubusercontent.com/aaronhorv/closet/main/docker-compose.yml
 ```
 
 Optionally create a `.env` file in the same folder:
@@ -56,7 +57,7 @@ The image is built for both amd64 and arm64, so it runs on a regular PC or a Ras
 
 **Tip:** on your phone, use "Add to Home Screen" so it opens like an app.
 
-**If `docker compose up` says "denied" or "unauthorized"**, the image on GitHub is still private. On GitHub go to your profile → Packages → outfit-closet → Package settings → Change visibility → Public.
+**If `docker compose up` says "denied" or "unauthorized"**, the image on GitHub is still private. On GitHub go to your profile → Packages → closet → Package settings → Change visibility → Public.
 
 ## Updating
 
@@ -66,7 +67,7 @@ docker compose pull
 docker compose up -d
 ```
 
-Your data in `./data` is kept. Every push to `main` builds a new `latest` image. To pin a version instead, tag a release (`git tag v1.0.0 && git push --tags`) and use `ghcr.io/aaronhorv/outfit-closet:1.0.0` in `docker-compose.yml`.
+Your data in `./data` is kept. Every push to `main` builds a new `latest` image. To pin a version instead, tag a release (`git tag v1.0.0 && git push --tags`) and use `ghcr.io/aaronhorv/closet:1.0.0` in `docker-compose.yml`.
 
 ## Your data
 
@@ -94,7 +95,7 @@ python -m venv .venv
 DATA_DIR=./data .venv/bin/uvicorn app.main:app --reload --port 8080
 ```
 
-To build the image locally instead of pulling it: `docker build -t ghcr.io/aaronhorv/outfit-closet:latest .`
+To build the image locally instead of pulling it: `docker build -t ghcr.io/aaronhorv/closet:latest .`
 
 ## How suggestions are scored
 

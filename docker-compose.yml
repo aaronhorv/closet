@@ -1,0 +1,14 @@
+services:
+  closet:
+    image: ghcr.io/aaronhorv/outfit-closet:latest
+    container_name: closet
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data          # database + photos live here; back up this folder
+    environment:
+      # All optional. Put the values in a .env file next to this file (see README).
+      - APP_PASSWORD=${APP_PASSWORD:-}        # browser asks for it; any username works
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}    # turns on the AI features
+      - AI_MODEL=${AI_MODEL:-}                # empty = gpt-6.1-terra
+    restart: unless-stopped

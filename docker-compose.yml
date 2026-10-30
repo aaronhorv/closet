@@ -3,7 +3,7 @@ services:
     image: ghcr.io/aaronhorv/closet:latest
     container_name: closet
     ports:
-      - "8080:8080"
+      - "${PORT:-8080}:8080"    # set PORT in .env to use another port on the server
     volumes:
       - ./data:/data          # database + photos live here; back up this folder
     environment:

@@ -40,6 +40,7 @@ curl -O https://raw.githubusercontent.com/aaronhorv/closet/main/docker-compose.y
 Optionally create a `.env` file in the same folder:
 
 ```
+PORT=8080
 APP_PASSWORD=choose-something-long
 OPENAI_API_KEY=sk-...
 AI_MODEL=
@@ -51,7 +52,7 @@ Protect it with `chmod 600 .env`. Then start it:
 docker compose up -d
 ```
 
-Open `http://<server-ip>:8080`, tap the gear icon, and set your city. If you set a password, the browser asks for it, and any username works.
+Open `http://<server-ip>:<PORT>` (8080 unless you changed it), tap the gear icon, and set your city. If you set a password, the browser asks for it, and any username works.
 
 The image is built for both amd64 and arm64, so it runs on a regular PC or a Raspberry Pi.
 
@@ -85,6 +86,7 @@ To back up, copy that folder (ideally with the container stopped: `docker compos
 | `APP_PASSWORD` | empty (no password) | Asks for a password in the browser. `/healthz` stays open for health checks. |
 | `OPENAI_API_KEY` | empty (AI off) | Turns on the AI features. |
 | `AI_MODEL` | `gpt-6.1-terra` | OpenAI model for the AI features. |
+| `PORT` | `8080` | Port on the server. Only used by `docker-compose.yml`. Check it's free with `ss -ltn | grep -w :8080` (no output = free). |
 | `DATA_DIR` | `/data` | Where the database and photos go inside the container. |
 
 ## Run without Docker (for development)

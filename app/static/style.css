@@ -207,6 +207,9 @@ main { max-width: 900px; margin: 0 auto; padding: 4px 16px 0; }
 .outfit-actions .btn { flex: 1; margin-top: 0; }
 .outfit-items figure.dirty .thumb { opacity: .45; }
 .ai-fill { align-self: center; }
+.settings-head { font-size: 15px; margin: 8px 0 0; padding-top: 14px; border-top: 1px solid var(--line); }
+.inline-status { display: flex; align-items: center; gap: 12px; }
+.field .link-btn { align-self: flex-start; font-weight: 500; }
 
 /* tab bar */
 .tabbar {

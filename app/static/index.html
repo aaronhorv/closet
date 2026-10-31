@@ -42,7 +42,7 @@
     <!-- CLOSET -->
     <section id="view-closet" class="view" hidden>
       <div class="closet-tools">
-        <input id="search" type="search" placeholder="Search name, color, brand, tag" autocomplete="off">
+        <input id="search" type="search" placeholder="Search name, color, brand, material, tag" autocomplete="off">
         <button id="add-item-btn" class="btn primary">Add item</button>
       </div>
       <div class="chips" id="cat-chips"></div>
@@ -98,6 +98,12 @@
         <button type="button" class="icon-btn" data-close aria-label="Close">✕</button>
       </div>
       <div class="dlg-body">
+        <div class="field" id="url-import">From a shop link
+          <div class="inline">
+            <input id="import-url" type="url" inputmode="url" placeholder="Paste a product page link" autocomplete="off">
+            <button type="button" class="btn" id="import-btn">Fetch</button>
+          </div>
+        </div>
         <label class="photo-pick">
           <input type="file" name="photo" accept="image/*" hidden>
           <div id="photo-preview" class="photo-preview"><span>Add photo</span></div>
@@ -129,6 +135,35 @@
         <label class="field">Brand
           <input name="brand" maxlength="80">
         </label>
+        <div class="row2">
+          <label class="field">Material
+            <input name="material" list="material-list" maxlength="60" placeholder="e.g. cotton">
+          </label>
+          <label class="field">Fit
+            <select name="fit">
+              <option value="">–</option>
+              <option value="slim">Slim</option>
+              <option value="regular">Regular</option>
+              <option value="relaxed">Relaxed / oversized</option>
+            </select>
+          </label>
+        </div>
+        <div class="row2">
+          <label class="field">Pattern
+            <select name="pattern">
+              <option value="">–</option>
+              <option value="solid">Solid</option>
+              <option value="striped">Striped</option>
+              <option value="checked">Checked / plaid</option>
+              <option value="floral">Floral</option>
+              <option value="print">Print / graphic</option>
+              <option value="other">Other</option>
+            </select>
+          </label>
+          <label class="field">Second color
+            <input name="color2" list="color-list" maxlength="40" placeholder="optional">
+          </label>
+        </div>
         <label class="field"><span>Tags <span class="small">(comma separated; “waterproof” helps on rainy days)</span></span>
           <input name="tags" maxlength="200" placeholder="work, summer, waterproof">
         </label>
@@ -155,6 +190,13 @@
     <option value="pink"><option value="purple"><option value="yellow"><option value="mustard">
     <option value="orange"><option value="rust"><option value="teal"><option value="patterned">
   </datalist>
+  <datalist id="material-list">
+    <option value="cotton"><option value="linen"><option value="wool"><option value="merino wool">
+    <option value="cashmere"><option value="denim"><option value="leather"><option value="suede">
+    <option value="silk"><option value="polyester"><option value="nylon"><option value="viscose">
+    <option value="corduroy"><option value="fleece"><option value="down"><option value="canvas">
+  </datalist>
+  <datalist id="model-list"></datalist>
 
   <!-- LOG OUTFIT -->
   <dialog id="log-dialog">
@@ -214,7 +256,20 @@
         <label class="field"><span>Add a jacket when it feels colder than (<span id="thresh-unit">°C</span>)</span>
           <input type="number" name="outerwear_below" step="1">
         </label>
-        <label class="field" id="ai-prompt-field" hidden><span>Outfit instructions for AI <span class="small">(used when the AI creates outfits)</span></span>
+        <h3 class="settings-head">AI (optional)</h3>
+        <div class="field">OpenAI API key
+          <input name="openai_key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…">
+          <div class="muted small" id="key-status"></div>
+          <button type="button" class="link-btn" id="remove-key-btn" hidden>Remove saved key</button>
+        </div>
+        <label class="field"><span>Model <span class="small">(empty = <span id="default-model">gpt-6.1-terra</span>)</span></span>
+          <input name="ai_model" list="model-list" autocomplete="off" spellcheck="false">
+        </label>
+        <div class="inline-status">
+          <button type="button" class="btn" id="test-key-btn">Test key</button>
+          <span class="muted small" id="test-result"></span>
+        </div>
+        <label class="field"><span>Outfit instructions for AI <span class="small">(added when the AI creates outfits)</span></span>
           <textarea name="ai_prompt" rows="4" maxlength="1000" placeholder="e.g. I prefer minimal looks, no shorts for work, I like navy with brown."></textarea>
         </label>
       </div>

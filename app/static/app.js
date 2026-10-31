@@ -220,7 +220,7 @@ function renderCloset() {
   if (state.filter === 'laundry') list = list.filter((i) => i.in_laundry);
   else if (CAT_LABEL[state.filter]) list = list.filter((i) => i.category === state.filter);
   const q = state.search.trim().toLowerCase();
-  if (q) list = list.filter((i) => [i.name, i.color, i.brand, i.tags, i.notes].join(' ').toLowerCase().includes(q));
+  if (q) list = list.filter((i) => [i.name, i.color, i.color2, i.brand, i.material, i.pattern, i.tags, i.notes].join(' ').toLowerCase().includes(q));
   list = [...list].sort(byOrder);
 
   const grid = $('#closet-grid');
@@ -287,6 +287,12 @@ function openItem(it = null) {
   $('#warmth-label').textContent = WARMTH[f.warmth.value];
   setSeg($('#formality-seg'), it?.formality || 2);
   f.brand.value = it?.brand || '';
+  f.material.value = it?.material || '';
+  f.fit.value = it?.fit || '';
+  f.pattern.value = it?.pattern || '';
+  f.color2.value = it?.color2 || '';
+  $('#url-import').hidden = !!it;
+  $('#import-url').value = '';
   f.tags.value = it?.tags || '';
   f.notes.value = it?.notes || '';
   f.favorite.checked = !!it?.favorite;
@@ -307,6 +313,7 @@ async function saveItem(e) {
   fd.append('warmth', f.warmth.value);
   fd.append('formality', segValue($('#formality-seg')) || 2);
   fd.append('brand', f.brand.value);
+  ['material', 'fit', 'pattern', 'color2'].forEach((k) => fd.append(k, f[k].value));
   fd.append('tags', f.tags.value);
   fd.append('notes', f.notes.value);
   fd.append('favorite', f.favorite.checked ? 'true' : 'false');
@@ -509,6 +516,48 @@ async function saveAIOutfit(o, btn) {
   }
 }
 
+// ---------- filling the item form (AI / shop link) ----------
+const FORM_KEYS = ['name', 'category', 'color', 'color2', 'pattern', 'material', 'fit', 'brand', 'tags'];
+
+function fillItemForm(d, overwrite) {
+  const f = $('#item-form');
+  FORM_KEYS.forEach((k) => {
+    if (d[k] === undefined || d[k] === null) return;
+    if (!overwrite && !d[k]) return; // don't blank out what the user typed
+    f[k].value = d[k];
+  });
+  if (d.warmth) { f.warmth.value = d.warmth; $('#warmth-label').textContent = WARMTH[d.warmth]; }
+  if (d.formality) setSeg($('#formality-seg'), d.formality);
+}
+
+async function importFromUrl() {
+  const url = $('#import-url').value.trim();
+  if (!url) { toast('Paste a product link first'); return; }
+  const btn = $('#import-btn');
+  btn.disabled = true;
+  btn.textContent = 'Reading…';
+  try {
+    const r = await api('/api/import-url', sendJSON('POST', { url }));
+    fillItemForm(r.fields, false);
+    if (r.photo) {
+      const blob = await (await fetch(r.photo)).blob();
+      pendingPhoto = new File([blob], 'photo.jpg', { type: 'image/jpeg' });
+      removePhoto = false;
+      setPreview(URL.createObjectURL(pendingPhoto));
+      updateAIButtons();
+    }
+    let msg = 'Filled in from the page. Check the details, then save.';
+    if (r.ai_error) msg = `Filled in what the page shows (AI failed: ${r.ai_error})`;
+    else if (!r.photo) msg = 'Filled in, but no photo was found. Add one if you like.';
+    toast(msg);
+  } catch (e) {
+    toast(e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Fetch';
+  }
+}
+
 // ---------- AI item fill ----------
 function updateAIButtons() {
   const hasPhoto = !!pendingPhoto || (!!editing?.photo_url && !removePhoto);
@@ -525,14 +574,7 @@ async function aiFill() {
     const fd = new FormData();
     fd.append('photo', blob, 'photo.jpg');
     const d = await api('/api/ai/describe', { method: 'POST', body: fd });
-    const f = $('#item-form');
-    f.name.value = d.name;
-    f.category.value = d.category;
-    f.color.value = d.color;
-    f.warmth.value = d.warmth;
-    $('#warmth-label').textContent = WARMTH[d.warmth];
-    setSeg($('#formality-seg'), d.formality);
-    f.tags.value = d.tags;
+    fillItemForm(d, true);
     toast('Filled in. Check the details, then save.');
   } catch (e) {
     toast(e.message);
@@ -555,8 +597,14 @@ function openSettings() {
   setSeg($('#unit-seg'), s.unit);
   $('#thresh-unit').textContent = `°${s.unit}`;
   f.outerwear_below.value = Math.round(toDisplay(s.outerwear_below));
-  $('#ai-prompt-field').hidden = !state.ai;
   f.ai_prompt.value = s.ai_prompt || '';
+  f.openai_key.value = '';
+  f.ai_model.value = s.ai_model || '';
+  $('#model-list').innerHTML = (s.ai_models || []).map((m) => `<option value="${esc(m)}">`).join('');
+  $('#default-model').textContent = (s.ai_models || ['gpt-6.1-terra'])[0];
+  removeKey = false;
+  showKeyStatus();
+  $('#test-result').textContent = '';
   $('#settings-dialog').showModal();
 }
 async function searchLocation() {
@@ -584,16 +632,54 @@ async function saveSettings(e) {
   const shown = Number(f.outerwear_below.value);
   // convert the threshold using the unit it was typed in
   const c = unit === 'F' ? (shown - 32) * 5 / 9 : shown;
-  const body = { unit, outerwear_below: Math.round(c * 10) / 10 };
-  if (state.ai) body.ai_prompt = f.ai_prompt.value;
+  const body = { unit, outerwear_below: Math.round(c * 10) / 10, ai_prompt: f.ai_prompt.value, ai_model: f.ai_model.value };
+  if (f.openai_key.value.trim()) body.openai_key = f.openai_key.value.trim();
+  else if (removeKey) body.openai_key = '';
   if (pendingLoc) Object.assign(body, { location_name: pendingLoc.label, lat: pendingLoc.lat, lon: pendingLoc.lon });
   state.settings = await api('/api/settings', sendJSON('PUT', body));
+  await loadConfig();
   $('#settings-dialog').close();
   toast('Settings saved');
   render();
 }
 
+let removeKey = false;
+
+function showKeyStatus() {
+  const s = state.settings;
+  const el = $('#key-status');
+  if (removeKey) {
+    el.textContent = s.ai_key_source === 'env'
+      ? 'Saved key will be removed; the key from the server’s .env file will be used.'
+      : 'Saved key will be removed when you press Save.';
+  } else if (s.ai_key_source === 'settings') el.textContent = `Saved (${s.ai_key_hint}). Type a new key to replace it.`;
+  else if (s.ai_key_source === 'env') el.textContent = `Using the key from the server’s .env file (${s.ai_key_hint}). A key saved here takes priority.`;
+  else el.textContent = 'Not set. AI features stay hidden until you add a key.';
+  $('#remove-key-btn').hidden = s.ai_key_source !== 'settings' || removeKey;
+}
+
+async function testKey() {
+  const f = $('#settings-form');
+  const out = $('#test-result');
+  const btn = $('#test-key-btn');
+  btn.disabled = true;
+  out.textContent = 'Testing…';
+  try {
+    const r = await api('/api/ai/test', sendJSON('POST', { openai_key: f.openai_key.value.trim(), ai_model: f.ai_model.value.trim() }));
+    out.textContent = `✓ Works with ${r.model}`;
+  } catch (e) {
+    out.textContent = `✗ ${e.message}`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 // ---------- data ----------
+async function loadConfig() {
+  const cfg = await api('/api/config');
+  state.ai = cfg.ai_enabled;
+  $('#outfits-tab').hidden = !(cfg.ai_enabled || cfg.saved_count);
+}
 async function loadItems() { state.items = await api('/api/items?include_archived=true'); }
 
 // ---------- wire up ----------
@@ -638,6 +724,8 @@ function init() {
   });
   $('#remove-photo-btn').onclick = () => { pendingPhoto = null; removePhoto = true; f.photo.value = ''; setPreview(null); updateAIButtons(); };
   $('#ai-fill-btn').onclick = aiFill;
+  $('#import-btn').onclick = importFromUrl;
+  $('#import-url').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); importFromUrl(); } });
   $('#build-btn').onclick = () => {
     const it = editing;
     $('#item-dialog').close();
@@ -720,15 +808,14 @@ function init() {
   $('#loc-search-btn').onclick = searchLocation;
   $('#loc-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); searchLocation(); } });
   $('#settings-form').addEventListener('submit', saveSettings);
+  $('#test-key-btn').onclick = testKey;
+  $('#remove-key-btn').onclick = () => { removeKey = true; $('#settings-form').openai_key.value = ''; showKeyStatus(); };
 }
 
 (async function start() {
   init();
   try {
-    let cfg;
-    [state.settings, cfg] = await Promise.all([api('/api/settings'), api('/api/config'), loadItems()]);
-    state.ai = cfg.ai_enabled;
-    $('#outfits-tab').hidden = !(cfg.ai_enabled || cfg.saved_count);
+    [state.settings] = await Promise.all([api('/api/settings'), loadConfig(), loadItems()]);
   } catch (e) {
     toast(`Couldn't reach the server: ${e.message}`);
   }

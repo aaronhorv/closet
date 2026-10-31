@@ -87,24 +87,45 @@ def _item_score(it, target, occasion, on, rainy):
     return s
 
 
+def is_patterned(it) -> bool:
+    return (it.get("pattern") or "solid") != "solid" or "pattern" in (it.get("color") or "").lower()
+
+
+def _accents(items, skip_patterned=False):
+    """Bold colors (main and second color) of the clothes, ignoring accessories."""
+    out = []
+    for i in items:
+        if i["category"] == "accessory" or (skip_patterned and is_patterned(i)):
+            continue
+        for c in (i.get("color"), i.get("color2")):
+            c = (c or "").strip().lower()
+            if c and not is_neutral(c) and "pattern" not in c:
+                out.append(c)
+    return list(dict.fromkeys(out))
+
+
 def _harmony(items):
-    bold = {(i.get("color") or "").strip().lower()
-            for i in items if i["category"] != "accessory" and not is_neutral(i.get("color"))}
-    if not bold:
+    patterned = sum(1 for i in items if i["category"] != "accessory" and is_patterned(i))
+    if patterned >= 2:
+        return -1.5  # two patterns rarely work
+    # a patterned piece is one statement, whatever its colors
+    n = len(_accents(items, skip_patterned=True)) + patterned
+    if n == 0:
         return 0.5
-    if len(bold) == 1:
+    if n == 1:
         return 0.8
-    if len(bold) == 2:
+    if n == 2:
         return -0.4
     return -1.5
 
 
 def _notes(items, on):
     notes = []
-    bold = [(i.get("color") or "").strip().lower()
-            for i in items if i["category"] != "accessory" and not is_neutral(i.get("color"))]
-    bold = list(dict.fromkeys(bold))
-    if not bold:
+    bold = _accents(items)
+    pat = next((i for i in items if i["category"] != "accessory" and is_patterned(i)), None)
+    if pat is not None:
+        notes.append(f"The {pat['name']} is the statement piece; the rest keeps it calm.")
+    elif not bold:
         notes.append("All neutrals: easy to get right.")
     elif len(bold) == 1:
         notes.append(f"Neutrals with a pop of {bold[0]}.")

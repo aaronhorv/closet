@@ -4,12 +4,13 @@ A small self-hosted closet tracker and outfit recommender. It runs as one Docker
 
 ## What it does
 
-- **Closet**: add clothes with a photo, category, main color, brand, warmth (1–5) and formality (casual / smart casual / formal). Mark things as in the laundry, favorite them, or archive them.
+- **Closet**: add clothes with a photo, category, main and second color, pattern, material, fit, brand, warmth (1–5) and formality (casual / smart casual / formal). Mark things as in the laundry, favorite them, or archive them.
+- **Add from a shop link**: paste a product page link in "Add item" and the app fills in the details and downloads the photo. It works without AI too (it reads the product data most shops put in their pages), but some shops block this.
 - **Today**: suggests 3 outfits from clean clothes, using simple rules (no AI):
   - the forecast for your city (free [Open-Meteo](https://open-meteo.com) data, no API key needed)
   - the occasion you pick
   - what you've worn recently (it avoids repeats and brings back neglected pieces)
-  - simple color rules (neutrals plus at most one accent color)
+  - simple color rules (neutrals plus at most one accent color or one patterned piece)
   - your favorites and how you've rated past outfits
   - a jacket when it's cold or wet; items tagged `waterproof` get a boost on rainy days
 - **History**: tap "Wear this" to log an outfit, or log one by hand. Rate outfits with stars, and future suggestions take the ratings into account.
@@ -17,16 +18,19 @@ A small self-hosted closet tracker and outfit recommender. It runs as one Docker
 
 ## Optional AI features (OpenAI)
 
-Set `OPENAI_API_KEY` to turn these on. Without it the app works the same, just without these buttons.
+Add your OpenAI API key in the app: gear icon → Settings → AI. Use "Test key" to check it, then Save. Get a key at <https://platform.openai.com/api-keys>. Without a key the app works the same, just without these buttons.
 
-- **Fill in with AI**: in the Add/Edit item form, after picking a photo. The photo is sent to OpenAI, which fills in name, category, color, warmth, formality and tags. You check them and save.
+The key is stored in the app's database (`data/closet.db`), and the browser only ever sees its last 4 characters. Keep backups of `data/` private, and set `APP_PASSWORD` if others use your network. You can also set `OPENAI_API_KEY` in `.env` instead; a key saved in Settings takes priority.
+
+- **Fill in with AI**: in the Add/Edit item form, after picking a photo. The photo is sent to OpenAI, which fills in name, category, colors, pattern, material, fit, warmth, formality and tags. You check them and save.
+- **Shop links get smarter**: with AI on, the page text and photo go to OpenAI, so links fill in every field.
 - **Build outfits with this**: open an item in the closet. The AI suggests 3 outfits that include it.
 - **Create outfits**: on the Outfits tab. The AI makes 5 outfits from your clean clothes. You can add a note like "work week".
 - **Outfit instructions for AI** (gear icon → Settings): your standing style preferences, e.g. "minimal looks, no shorts for work". They're added to every outfit request, on top of the built-in rules.
 
-Only the photo you're filling in is sent. Outfit building sends item details as text (name, category, color, brand, warmth, formality, tags, notes, wear count, ratings), never photos. The app only keeps outfits that use real, clean items from your closet.
+Only the photo or shop page you're filling in is sent. Outfit building sends item details as text (name, category, colors, pattern, material, fit, brand, warmth, formality, tags, notes, wear count, ratings), never photos. The app only keeps outfits that use real, clean items from your closet.
 
-The default model is `gpt-6.1-terra`. To use another one, set `AI_MODEL`, for example `gpt-6-luna` (cheaper) or `gpt-6.1-sol` (smarter). Get a key at <https://platform.openai.com/api-keys>.
+The default model is `gpt-6.1-terra`. To use another one, pick it in Settings, for example `gpt-6-luna` (cheaper) or `gpt-6.1-sol` (smarter).
 
 ## Set up on your server
 
@@ -42,8 +46,6 @@ Optionally create a `.env` file in the same folder:
 ```
 PORT=8080
 APP_PASSWORD=choose-something-long
-OPENAI_API_KEY=sk-...
-AI_MODEL=
 ```
 
 Protect it with `chmod 600 .env`. Then start it:
@@ -84,8 +86,8 @@ To back up, copy that folder (ideally with the container stopped: `docker compos
 | Variable | Default | What it does |
 |---|---|---|
 | `APP_PASSWORD` | empty (no password) | Asks for a password in the browser. `/healthz` stays open for health checks. |
-| `OPENAI_API_KEY` | empty (AI off) | Turns on the AI features. |
-| `AI_MODEL` | `gpt-6.1-terra` | OpenAI model for the AI features. |
+| `OPENAI_API_KEY` | empty | Optional. Fallback OpenAI key; a key saved in Settings wins. |
+| `AI_MODEL` | `gpt-6.1-terra` | Optional. Fallback model; a model picked in Settings wins. |
 | `PORT` | `8080` | Port on the server. Only used by `docker-compose.yml`. Check it's free with `ss -ltn \| grep -w :8080` (no output = free). |
 | `DATA_DIR` | `/data` | Where the database and photos go inside the container. |
 

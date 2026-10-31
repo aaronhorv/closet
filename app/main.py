@@ -1,5 +1,6 @@
 """Closet tracker + outfit recommender: API and static web UI."""
 import base64
+import io
 import os
 import secrets
 import sqlite3
@@ -14,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps
 from pydantic import BaseModel
 
-from . import ai, recommender, weather
+from . import ai, pages, recommender, weather
 
 DATA_DIR = os.environ.get("DATA_DIR", "/data")
 PHOTO_DIR = os.path.join(DATA_DIR, "photos")
@@ -70,7 +71,16 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 """
 
-DEFAULT_SETTINGS = {"unit": "C", "location_name": "", "lat": "", "lon": "", "outerwear_below": "16", "ai_prompt": ""}
+DEFAULT_SETTINGS = {"unit": "C", "location_name": "", "lat": "", "lon": "", "outerwear_below": "16",
+                    "ai_prompt": "", "openai_key": "", "ai_model": ""}
+
+# Item columns added after the first release. init_db adds any that an older database is missing.
+EXTRA_ITEM_COLUMNS = {
+    "color2": "TEXT NOT NULL DEFAULT ''",
+    "pattern": "TEXT NOT NULL DEFAULT ''",
+    "material": "TEXT NOT NULL DEFAULT ''",
+    "fit": "TEXT NOT NULL DEFAULT ''",
+}
 
 ITEM_SELECT = """
 SELECT i.*, COUNT(o.id) AS times_worn, MAX(o.worn_on) AS last_worn, AVG(o.rating) AS avg_rating
@@ -97,6 +107,22 @@ def init_db():
     with db() as conn:
         conn.execute("PRAGMA journal_mode = WAL")
         conn.executescript(SCHEMA)
+        have = {r["name"] for r in conn.execute("PRAGMA table_info(items)")}
+        for col, decl in EXTRA_ITEM_COLUMNS.items():
+            if col not in have:
+                conn.execute(f"ALTER TABLE items ADD COLUMN {col} {decl}")
+        load_ai_config(conn)
+
+
+def raw_settings(conn) -> dict:
+    s = dict(DEFAULT_SETTINGS)
+    s.update({r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM settings")})
+    return s
+
+
+def load_ai_config(conn):
+    s = raw_settings(conn)
+    ai.set_config(s["openai_key"], s["ai_model"])
 
 
 init_db()
@@ -158,8 +184,9 @@ def get_item(conn, item_id: int) -> dict:
 
 
 def get_settings(conn) -> dict:
-    s = dict(DEFAULT_SETTINGS)
-    s.update({r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM settings")})
+    """Settings for the browser. The API key itself is never sent back, only its last 4 characters."""
+    s = raw_settings(conn)
+    key = ai.api_key()
     return {
         "unit": s["unit"] if s["unit"] in ("C", "F") else "C",
         "location_name": s["location_name"],
@@ -167,6 +194,11 @@ def get_settings(conn) -> dict:
         "lon": float(s["lon"]) if s["lon"] else None,
         "outerwear_below": float(s["outerwear_below"] or 16),
         "ai_prompt": s["ai_prompt"],
+        "ai_model": s["ai_model"],
+        "ai_model_effective": ai.model(),
+        "ai_models": ai.MODELS,
+        "ai_key_source": ai.key_source(),
+        "ai_key_hint": f"…{key[-4:]}" if len(key) >= 8 else ("set" if key else ""),
     }
 
 
@@ -200,6 +232,10 @@ def item_form(
     name: str = Form(...),
     category: str = Form(...),
     color: str = Form(""),
+    color2: str = Form(""),
+    pattern: str = Form(""),
+    material: str = Form(""),
+    fit: str = Form(""),
     warmth: int = Form(3),
     formality: int = Form(2),
     brand: str = Form(""),
@@ -216,6 +252,10 @@ def item_form(
         "name": name[:120],
         "category": category,
         "color": color.strip()[:40],
+        "color2": color2.strip()[:40],
+        "pattern": pattern if pattern in ai.PATTERNS else "",
+        "material": material.strip()[:60],
+        "fit": fit if fit in ai.FITS else "",
         "warmth": min(5, max(1, warmth)),
         "formality": min(3, max(1, formality)),
         "brand": brand.strip()[:80],
@@ -492,12 +532,69 @@ def delete_saved(saved_id: int):
 def config():
     with db() as conn:
         saved = conn.execute("SELECT COUNT(*) FROM saved_outfits").fetchone()[0]
-    return {"ai_enabled": ai.enabled(), "saved_count": saved}
+    return {"ai_enabled": ai.enabled(), "ai_model": ai.model(), "saved_count": saved}
+
+
+class AITestIn(BaseModel):
+    openai_key: str = ""
+    ai_model: str = ""
+
+
+@app.post("/api/ai/test")
+def ai_test(body: AITestIn):
+    """Check a key and model. Uses the typed key if given, otherwise the saved one."""
+    try:
+        name = ai.test_key(body.openai_key, body.ai_model)
+    except ai.AIError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True, "model": name}
+
+
+# ---------- add an item from a shop link ----------
+
+class ImportIn(BaseModel):
+    url: str
+
+
+def _photo_preview(raw: bytes) -> Optional[str]:
+    """Resize a downloaded product photo and return it as a data URL for the item form."""
+    try:
+        img = ImageOps.exif_transpose(Image.open(io.BytesIO(raw)))
+        if img.mode != "RGB":
+            rgba = img.convert("RGBA")
+            img = Image.new("RGB", rgba.size, (255, 255, 255))
+            img.paste(rgba, mask=rgba.split()[3])
+        img.thumbnail((1200, 1200))
+        buf = io.BytesIO()
+        img.save(buf, "JPEG", quality=85)
+        return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+    except Exception:
+        return None
+
+
+@app.post("/api/import-url")
+def import_url(body: ImportIn):
+    try:
+        info = pages.read_product(body.url)
+    except pages.PageError as e:
+        raise HTTPException(400, str(e))
+    photo = _photo_preview(info["image"]) if info["image"] else None
+    fields = pages.guess_defaults(info["basic"])
+    used_ai, ai_error = False, None
+    if ai.enabled():
+        try:
+            described = ai.describe_page(info["page_text"], info["image"] if photo else None)
+            # the AI saw the page facts too; only fill gaps it left from them
+            fields = {**described, **{k: v for k, v in info["basic"].items() if v and not described.get(k)}}
+            used_ai = True
+        except ai.AIError as e:
+            ai_error = str(e)
+    return {"fields": fields, "photo": photo, "used_ai": used_ai, "ai_error": ai_error}
 
 
 def require_ai():
     if not ai.enabled():
-        raise HTTPException(400, "AI is not set up. Add OPENAI_API_KEY to enable it.")
+        raise HTTPException(400, "AI is not set up. Add an OpenAI API key in Settings.")
 
 
 @app.post("/api/ai/describe")
@@ -597,6 +694,8 @@ class SettingsIn(BaseModel):
     lon: Optional[float] = None
     outerwear_below: Optional[float] = None
     ai_prompt: Optional[str] = None
+    openai_key: Optional[str] = None    # "" removes the saved key
+    ai_model: Optional[str] = None      # "" = default
 
 
 @app.get("/api/settings")
@@ -610,13 +709,15 @@ def write_settings(body: SettingsIn):
     data = body.model_dump(exclude_unset=True)
     if "unit" in data and data["unit"] not in ("C", "F"):
         raise HTTPException(400, "Unit must be C or F")
-    if data.get("ai_prompt") is not None:
-        data["ai_prompt"] = data["ai_prompt"].strip()[:1000]
+    for k, limit in (("ai_prompt", 1000), ("openai_key", 300), ("ai_model", 80)):
+        if data.get(k) is not None:
+            data[k] = data[k].strip()[:limit]
     with db() as conn:
         for k, v in data.items():
             conn.execute("INSERT INTO settings (key, value) VALUES (?, ?) "
                          "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                          (k, "" if v is None else str(v)))
+        load_ai_config(conn)
         return get_settings(conn)
 
 

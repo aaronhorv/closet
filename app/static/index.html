@@ -103,12 +103,18 @@
             <input id="import-url" type="url" inputmode="url" placeholder="Paste a product page link" autocomplete="off">
             <button type="button" class="btn" id="import-btn">Fetch</button>
           </div>
+          <div class="small import-status" id="import-status" role="status"></div>
         </div>
         <label class="photo-pick">
           <input type="file" name="photo" accept="image/*" hidden>
           <div id="photo-preview" class="photo-preview"><span>Add photo</span></div>
         </label>
         <button type="button" id="remove-photo-btn" class="link-btn" hidden>Remove photo</button>
+        <label class="check cutout-check" id="cutout-check" hidden><input type="checkbox" id="cutout-toggle" checked> Remove background</label>
+        <div class="photo-actions" id="photo-actions" hidden>
+          <button type="button" class="btn" id="cutout-btn">Remove background</button>
+          <button type="button" class="btn ghost" id="restore-btn">Restore original photo</button>
+        </div>
         <button type="button" id="ai-fill-btn" class="btn ai-fill" hidden>✨ Fill in with AI</button>
 
         <label class="field">Name
@@ -133,7 +139,10 @@
           </div>
         </div>
         <label class="field">Brand
-          <input name="brand" maxlength="80">
+          <div class="combo">
+            <input name="brand" maxlength="80" autocomplete="off" role="combobox" aria-autocomplete="list" aria-controls="brand-list" placeholder="Start typing, e.g. Boss">
+            <div class="combo-list" id="brand-list" role="listbox" hidden></div>
+          </div>
         </label>
         <div class="row2">
           <label class="field">Material
@@ -256,6 +265,13 @@
         <label class="field"><span>Add a jacket when it feels colder than (<span id="thresh-unit">°C</span>)</span>
           <input type="number" name="outerwear_below" step="1">
         </label>
+        <div id="photos-section" hidden>
+          <h3 class="settings-head">Photos</h3>
+          <div class="inline-status">
+            <button type="button" class="btn" id="cleanup-btn">Remove background from all photos</button>
+          </div>
+          <div class="muted small" id="cleanup-status">Originals are kept, so you can undo it per item.</div>
+        </div>
         <h3 class="settings-head">AI (optional)</h3>
         <div class="field">OpenAI API key
           <input name="openai_key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…">

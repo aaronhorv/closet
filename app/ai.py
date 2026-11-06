@@ -167,6 +167,11 @@ DESCRIBE_INSTRUCTIONS = """You catalog clothes for a personal closet app. Descri
 
 def _photo_data_url(raw: bytes) -> str:
     img = Image.open(io.BytesIO(raw))
+    if img.mode in ("RGBA", "LA", "P"):
+        # cut-out photos are transparent; put them on white so the item stays visible
+        rgba = img.convert("RGBA")
+        img = Image.new("RGB", rgba.size, (255, 255, 255))
+        img.paste(rgba, mask=rgba.split()[3])
     img = img.convert("RGB")
     img.thumbnail((1024, 1024))
     buf = io.BytesIO()

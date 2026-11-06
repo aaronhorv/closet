@@ -5,6 +5,8 @@ A small self-hosted closet tracker and outfit recommender. It runs as one Docker
 ## What it does
 
 - **Closet**: add clothes with a photo, category, main and second color, pattern, material, fit, brand, warmth (1–5) and formality (casual / smart casual / formal). Mark things as in the laundry, favorite them, or archive them.
+- **Clean photos**: backgrounds are removed on your server when you add a photo (free, no AI or key needed). The original is kept, so "Restore original photo" undoes it. Settings → "Remove background from all photos" cleans up existing ones. Works best on a plain or tidy background.
+- **Brand picker**: start typing and pick from brands you've used before, or add a new one.
 - **Add from a shop link**: paste a product page link in "Add item" and the app fills in the details and downloads the photo. It works without AI too (it reads the product data most shops put in their pages), but some shops block this.
 - **Today**: suggests 3 outfits from clean clothes, using simple rules (no AI):
   - the forecast for your city (free [Open-Meteo](https://open-meteo.com) data, no API key needed)
@@ -56,7 +58,7 @@ docker compose up -d
 
 Open `http://<server-ip>:<PORT>` (8080 unless you changed it), tap the gear icon, and set your city. If you set a password, the browser asks for it, and any username works.
 
-The image is built for both amd64 and arm64, so it runs on a regular PC or a Raspberry Pi.
+The image is built for both amd64 and arm64, so it runs on a regular PC or a Raspberry Pi. It's about 0.5–1 GB because it includes the background-removal model. Removing a background takes about a second on a normal PC (longer on a Pi) and briefly uses about 500 MB of memory, which is freed after 2 minutes of no use.
 
 **Tip:** on your phone, use "Add to Home Screen" so it opens like an app.
 

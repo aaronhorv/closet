@@ -24,11 +24,20 @@ const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 async function api(path, opts = {}) {
-  const res = await fetch(path, opts);
+  let res;
+  try {
+    res = await fetch(path, opts);
+  } catch {
+    throw new Error("Couldn't reach the closet server. Check your connection.");
+  }
   if (!res.ok) {
-    let msg = res.statusText;
-    try { msg = (await res.json()).detail || msg; } catch { /* not json */ }
-    throw new Error(typeof msg === 'string' ? msg : 'Request failed');
+    let msg = '';
+    try { msg = (await res.json()).detail; } catch { /* not json */ }
+    if (typeof msg !== 'string' || !msg) {
+      msg = res.status === 504 || res.status === 502 ? 'The server took too long to answer. Try again.'
+        : `Something went wrong (error ${res.status}).`;
+    }
+    throw new Error(msg);
   }
   return res.json();
 }
@@ -36,6 +45,9 @@ const sendJSON = (method, body) => ({ method, headers: { 'Content-Type': 'applic
 
 function toast(msg) {
   const t = $('#toast');
+  // an open dialog sits above the page, so show the toast inside it
+  const host = $$('dialog[open]').pop() || document.body;
+  if (t.parentElement !== host) host.appendChild(t);
   t.textContent = msg;
   t.classList.add('show');
   clearTimeout(toast.timer);
@@ -293,6 +305,9 @@ function openItem(it = null) {
   f.color2.value = it?.color2 || '';
   $('#url-import').hidden = !!it;
   $('#import-url').value = '';
+  setImportStatus('');
+  $('#cutout-toggle').checked = true;
+  hideBrands();
   f.tags.value = it?.tags || '';
   f.notes.value = it?.notes || '';
   f.favorite.checked = !!it?.favorite;
@@ -318,14 +333,15 @@ async function saveItem(e) {
   fd.append('notes', f.notes.value);
   fd.append('favorite', f.favorite.checked ? 'true' : 'false');
   if (pendingPhoto) fd.append('photo', pendingPhoto);
+  if (pendingPhoto && state.cutout && $('#cutout-toggle').checked) fd.append('cutout_photo', 'true');
   if (removePhoto && !pendingPhoto) fd.append('remove_photo', 'true');
 
   const btn = $('#item-save-btn');
   btn.disabled = true;
   try {
-    await api(editing ? `/api/items/${editing.id}` : '/api/items', { method: editing ? 'PUT' : 'POST', body: fd });
+    const saved = await api(editing ? `/api/items/${editing.id}` : '/api/items', { method: editing ? 'PUT' : 'POST', body: fd });
     $('#item-dialog').close();
-    toast(editing ? 'Saved' : 'Added to your closet');
+    toast(saved.cutout_error ? `Saved, but the background wasn't removed: ${saved.cutout_error}` : (editing ? 'Saved' : 'Added to your closet'));
     await loadItems();
     render();
   } catch (err) {
@@ -532,10 +548,11 @@ function fillItemForm(d, overwrite) {
 
 async function importFromUrl() {
   const url = $('#import-url').value.trim();
-  if (!url) { toast('Paste a product link first'); return; }
+  if (!url) { setImportStatus('Paste a product link first.', true); return; }
   const btn = $('#import-btn');
   btn.disabled = true;
   btn.textContent = 'Reading…';
+  setImportStatus('Reading the page… this can take a few seconds.');
   try {
     const r = await api('/api/import-url', sendJSON('POST', { url }));
     fillItemForm(r.fields, false);
@@ -544,23 +561,126 @@ async function importFromUrl() {
       pendingPhoto = new File([blob], 'photo.jpg', { type: 'image/jpeg' });
       removePhoto = false;
       setPreview(URL.createObjectURL(pendingPhoto));
+      $('#cutout-toggle').checked = false; // shop photos usually have a clean background already
       updateAIButtons();
     }
     let msg = 'Filled in from the page. Check the details, then save.';
-    if (r.ai_error) msg = `Filled in what the page shows (AI failed: ${r.ai_error})`;
-    else if (!r.photo) msg = 'Filled in, but no photo was found. Add one if you like.';
-    toast(msg);
+    if (r.ai_error) msg = `Filled in what the page shows. The AI part failed: ${r.ai_error}`;
+    else if (!r.photo) msg = 'Filled in, but no photo was found on the page. Add one if you like.';
+    setImportStatus(msg, !!r.ai_error);
   } catch (e) {
-    toast(e.message);
+    setImportStatus(`Couldn't use that link: ${e.message}`, true);
   } finally {
     btn.disabled = false;
     btn.textContent = 'Fetch';
   }
 }
 
+// ---------- photo background ----------
+async function photoAction(kind) {
+  const btn = kind === 'cutout' ? $('#cutout-btn') : $('#restore-btn');
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = kind === 'cutout' ? 'Removing background…' : 'Restoring…';
+  try {
+    const it = await api(`/api/items/${editing.id}/${kind === 'cutout' ? 'cutout' : 'restore-photo'}`, { method: 'POST' });
+    Object.assign(editing, it);
+    const inList = state.items.find((i) => i.id === it.id);
+    if (inList && inList !== editing) Object.assign(inList, it);
+    setPreview(it.photo_url);
+    if (state.view === 'closet') renderCloset();
+    toast(kind === 'cutout' ? 'Background removed. “Restore original photo” undoes it.' : 'Original photo restored');
+  } catch (e) {
+    toast(e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+    updateAIButtons();
+  }
+}
+
+async function cleanupAllPhotos() {
+  const todo = state.items.filter((i) => i.photo_url && !i.has_original);
+  const status = $('#cleanup-status');
+  if (!todo.length) { status.textContent = 'All photos already have their background removed.'; return; }
+  if (!confirm(`Remove the background from ${todo.length} photo${todo.length > 1 ? 's' : ''}? Originals are kept, so you can undo it per item.`)) return;
+  const btn = $('#cleanup-btn');
+  btn.disabled = true;
+  let done = 0;
+  const failed = [];
+  for (const it of todo) {
+    status.textContent = `Working… ${done + failed.length + 1} of ${todo.length}`;
+    try { await api(`/api/items/${it.id}/cutout`, { method: 'POST' }); done += 1; } catch (e) { failed.push(it.name); }
+  }
+  status.textContent = `Done: ${done} cleaned up.` + (failed.length ? ` Couldn't do: ${failed.join(', ')}.` : '');
+  btn.disabled = false;
+  await loadItems();
+  if (state.view === 'closet') renderCloset();
+}
+
+// ---------- brand picker ----------
+const combo = { opts: [], idx: -1 };
+
+function brandOptions(q) {
+  const byLower = new Map();
+  state.items.forEach((i) => { if (i.brand && !byLower.has(i.brand.toLowerCase())) byLower.set(i.brand.toLowerCase(), i.brand); });
+  const all = [...byLower.values()].sort((a, b) => a.localeCompare(b));
+  const ql = q.trim().toLowerCase();
+  const starts = all.filter((b) => b.toLowerCase().startsWith(ql));
+  const contains = ql ? all.filter((b) => !b.toLowerCase().startsWith(ql) && b.toLowerCase().includes(ql)) : [];
+  const opts = [...starts, ...contains].slice(0, 8).map((b) => ({ value: b, label: b }));
+  if (ql && !byLower.has(ql)) opts.push({ value: q.trim(), label: `Add “${q.trim()}”`, add: true });
+  return opts;
+}
+
+function showBrands() {
+  const input = $('#item-form').brand;
+  const list = $('#brand-list');
+  combo.opts = brandOptions(input.value);
+  combo.idx = -1;
+  if (!combo.opts.length) { hideBrands(); return; }
+  const ql = input.value.trim().toLowerCase();
+  list.innerHTML = combo.opts.map((o, i) => {
+    let label = esc(o.label);
+    const at = o.add ? -1 : o.label.toLowerCase().indexOf(ql);
+    if (ql && at >= 0) label = `${esc(o.label.slice(0, at))}<mark>${esc(o.label.slice(at, at + ql.length))}</mark>${esc(o.label.slice(at + ql.length))}`;
+    return `<div class="combo-opt ${o.add ? 'add' : ''}" role="option" data-i="${i}">${label}</div>`;
+  }).join('');
+  list.hidden = false;
+  input.setAttribute('aria-expanded', 'true');
+  list.scrollIntoView({ block: 'nearest' }); // near the bottom of the form it would hide behind Save
+}
+function hideBrands() {
+  $('#brand-list').hidden = true;
+  $('#item-form').brand.setAttribute('aria-expanded', 'false');
+}
+function pickBrand(i) {
+  $('#item-form').brand.value = combo.opts[i].value;
+  hideBrands();
+}
+function highlightBrand(step) {
+  if (!combo.opts.length) return;
+  combo.idx = (combo.idx + step + combo.opts.length) % combo.opts.length;
+  $$('.combo-opt', $('#brand-list')).forEach((el, i) => {
+    el.classList.toggle('on', i === combo.idx);
+    if (i === combo.idx) el.scrollIntoView({ block: 'nearest' });
+  });
+}
+
 // ---------- AI item fill ----------
+function setImportStatus(msg, isError = false) {
+  const el = $('#import-status');
+  el.textContent = msg;
+  el.classList.toggle('error', isError);
+}
+
 function updateAIButtons() {
   const hasPhoto = !!pendingPhoto || (!!editing?.photo_url && !removePhoto);
+  const savedPhoto = !!editing?.photo_url && !pendingPhoto && !removePhoto;
+  $('#cutout-check').hidden = !(state.cutout && pendingPhoto);
+  $('#cutout-btn').hidden = !(state.cutout && savedPhoto && !editing.has_original);
+  $('#restore-btn').hidden = !(savedPhoto && editing.has_original);
+  $('#photo-actions').hidden = $('#cutout-btn').hidden && $('#restore-btn').hidden;
   $('#ai-fill-btn').hidden = !state.ai || !hasPhoto;
   $('#build-btn').hidden = !state.ai || !editing || editing.archived;
 }
@@ -598,6 +718,7 @@ function openSettings() {
   $('#thresh-unit').textContent = `°${s.unit}`;
   f.outerwear_below.value = Math.round(toDisplay(s.outerwear_below));
   f.ai_prompt.value = s.ai_prompt || '';
+  $('#photos-section').hidden = !state.cutout;
   f.openai_key.value = '';
   f.ai_model.value = s.ai_model || '';
   $('#model-list').innerHTML = (s.ai_models || []).map((m) => `<option value="${esc(m)}">`).join('');
@@ -678,6 +799,7 @@ async function testKey() {
 async function loadConfig() {
   const cfg = await api('/api/config');
   state.ai = cfg.ai_enabled;
+  state.cutout = cfg.cutout_enabled;
   $('#outfits-tab').hidden = !(cfg.ai_enabled || cfg.saved_count);
 }
 async function loadItems() { state.items = await api('/api/items?include_archived=true'); }
@@ -719,12 +841,33 @@ function init() {
     if (!file) return;
     pendingPhoto = file;
     removePhoto = false;
+    $('#cutout-toggle').checked = true;
     setPreview(URL.createObjectURL(file));
     updateAIButtons();
   });
   $('#remove-photo-btn').onclick = () => { pendingPhoto = null; removePhoto = true; f.photo.value = ''; setPreview(null); updateAIButtons(); };
   $('#ai-fill-btn').onclick = aiFill;
   $('#import-btn').onclick = importFromUrl;
+  $('#cutout-btn').onclick = () => photoAction('cutout');
+  $('#restore-btn').onclick = () => photoAction('restore');
+  $('#cleanup-btn').onclick = cleanupAllPhotos;
+  const brandInput = f.brand;
+  brandInput.addEventListener('input', showBrands);
+  brandInput.addEventListener('focus', showBrands);
+  brandInput.addEventListener('blur', () => setTimeout(hideBrands, 150));
+  brandInput.addEventListener('keydown', (e) => {
+    const open = !$('#brand-list').hidden;
+    if (e.key === 'ArrowDown') { e.preventDefault(); if (!open) showBrands(); highlightBrand(1); }
+    else if (e.key === 'ArrowUp' && open) { e.preventDefault(); highlightBrand(-1); }
+    else if (e.key === 'Enter' && open && combo.idx >= 0) { e.preventDefault(); pickBrand(combo.idx); }
+    else if (e.key === 'Escape' && open) { e.preventDefault(); e.stopPropagation(); hideBrands(); }
+  });
+  $('#brand-list').addEventListener('pointerdown', (e) => {
+    const opt = e.target.closest('[data-i]');
+    if (!opt) return;
+    e.preventDefault(); // keep focus in the field
+    pickBrand(Number(opt.dataset.i));
+  });
   $('#import-url').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); importFromUrl(); } });
   $('#build-btn').onclick = () => {
     const it = editing;

@@ -1,6 +1,7 @@
 """Closet tracker + outfit recommender: API and static web UI."""
 import base64
 import io
+import mimetypes
 import os
 import secrets
 import sqlite3
@@ -15,7 +16,9 @@ from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps
 from pydantic import BaseModel
 
-from . import ai, pages, recommender, weather
+from . import ai, cutout, pages, recommender, weather
+
+mimetypes.add_type("image/webp", ".webp")  # cut-out photos; not in every system's type list
 
 DATA_DIR = os.environ.get("DATA_DIR", "/data")
 PHOTO_DIR = os.path.join(DATA_DIR, "photos")
@@ -80,6 +83,7 @@ EXTRA_ITEM_COLUMNS = {
     "pattern": "TEXT NOT NULL DEFAULT ''",
     "material": "TEXT NOT NULL DEFAULT ''",
     "fit": "TEXT NOT NULL DEFAULT ''",
+    "photo_original": "TEXT",   # set when the background was removed; lets you undo it
 }
 
 ITEM_SELECT = """
@@ -166,6 +170,7 @@ def item_dict(row) -> dict:
     d["photo_url"] = f"/photos/{d['photo']}" if d.get("photo") else None
     for k in ("favorite", "in_laundry", "archived"):
         d[k] = bool(d[k])
+    d["has_original"] = bool(d.pop("photo_original", None))
     if d.get("avg_rating") is not None:
         d["avg_rating"] = round(d["avg_rating"], 2)
     return d
@@ -226,6 +231,24 @@ def delete_photo(name: Optional[str]):
             pass
 
 
+def make_cutout(name: str) -> str:
+    """Cut the item out of a saved photo; returns the new (transparent WebP) file name."""
+    with Image.open(os.path.join(PHOTO_DIR, os.path.basename(name))) as img:
+        out = cutout.remove_background(img)
+    new = f"{uuid.uuid4().hex}.webp"
+    out.save(os.path.join(PHOTO_DIR, new), "WEBP", quality=85, method=4)
+    return new
+
+
+def canonical_brand(conn, brand: str) -> str:
+    """Reuse the existing spelling of a brand ("boss" -> "BOSS" if BOSS is already used)."""
+    if not brand:
+        return brand
+    row = conn.execute("SELECT brand FROM items WHERE brand <> '' AND lower(brand) = lower(?) "
+                       "GROUP BY brand ORDER BY COUNT(*) DESC LIMIT 1", (brand,)).fetchone()
+    return row["brand"] if row else brand
+
+
 # ---------- items ----------
 
 def item_form(
@@ -271,15 +294,32 @@ def list_items(include_archived: bool = False):
         return fetch_items(conn, "" if include_archived else "i.archived = 0")
 
 
+def apply_cutout(fields: dict) -> Optional[str]:
+    """Replace fields["photo"] with a cut-out version, keeping the original. Returns an error message or None."""
+    try:
+        cut = make_cutout(fields["photo"])
+    except cutout.CutoutError as e:
+        return str(e)
+    fields["photo_original"], fields["photo"] = fields["photo"], cut
+    return None
+
+
 @app.post("/api/items")
-def create_item(fields: dict = Depends(item_form), photo: Optional[UploadFile] = File(None)):
+def create_item(fields: dict = Depends(item_form), photo: Optional[UploadFile] = File(None),
+                cutout_photo: bool = Form(False)):
+    warning = None
     if photo is not None and photo.filename:
         fields["photo"] = save_photo(photo)
-    cols = ", ".join(fields)
-    marks = ", ".join("?" for _ in fields)
+        if cutout_photo:
+            warning = apply_cutout(fields)
     with db() as conn:
+        fields["brand"] = canonical_brand(conn, fields["brand"])
+        cols = ", ".join(fields)
+        marks = ", ".join("?" for _ in fields)
         cur = conn.execute(f"INSERT INTO items ({cols}) VALUES ({marks})", tuple(fields.values()))
-        return get_item(conn, cur.lastrowid)
+        item = get_item(conn, cur.lastrowid)
+    item["cutout_error"] = warning
+    return item
 
 
 @app.put("/api/items/{item_id}")
@@ -288,18 +328,68 @@ def update_item(
     fields: dict = Depends(item_form),
     photo: Optional[UploadFile] = File(None),
     remove_photo: bool = Form(False),
+    cutout_photo: bool = Form(False),
 ):
+    warning = None
     with db() as conn:
         old = get_item(conn, item_id)
+        old_files = photo_files(conn, item_id)
         if photo is not None and photo.filename:
             fields["photo"] = save_photo(photo)
-            delete_photo(old["photo"])
+            fields["photo_original"] = None
+            if cutout_photo:
+                warning = apply_cutout(fields)
+            for f in old_files:
+                delete_photo(f)
         elif remove_photo:
-            fields["photo"] = None
-            delete_photo(old["photo"])
+            fields["photo"] = fields["photo_original"] = None
+            for f in old_files:
+                delete_photo(f)
+        fields["brand"] = canonical_brand(conn, fields["brand"])
         sets = ", ".join(f"{k} = ?" for k in fields)
         conn.execute(f"UPDATE items SET {sets} WHERE id = ?", (*fields.values(), item_id))
-        return get_item(conn, item_id)
+        item = get_item(conn, item_id)
+    item["cutout_error"] = warning
+    return item
+
+
+def photo_files(conn, item_id: int) -> list:
+    row = conn.execute("SELECT photo, photo_original FROM items WHERE id = ?", (item_id,)).fetchone()
+    return [f for f in (row["photo"], row["photo_original"]) if f] if row else []
+
+
+@app.post("/api/items/{item_id}/cutout")
+def cutout_item(item_id: int):
+    """Remove the background of an item's photo (always starting from the original)."""
+    with db() as conn:
+        get_item(conn, item_id)
+        row = conn.execute("SELECT photo, photo_original FROM items WHERE id = ?", (item_id,)).fetchone()
+    if not row["photo"]:
+        raise HTTPException(400, "This item has no photo.")
+    source = row["photo_original"] or row["photo"]
+    try:
+        new = make_cutout(source)
+    except cutout.CutoutError as e:
+        raise HTTPException(400, str(e))
+    with db() as conn:
+        conn.execute("UPDATE items SET photo = ?, photo_original = ? WHERE id = ?", (new, source, item_id))
+        item = get_item(conn, item_id)
+    if row["photo_original"]:
+        delete_photo(row["photo"])  # the previous cut-out
+    return item
+
+
+@app.post("/api/items/{item_id}/restore-photo")
+def restore_photo(item_id: int):
+    with db() as conn:
+        get_item(conn, item_id)
+        row = conn.execute("SELECT photo, photo_original FROM items WHERE id = ?", (item_id,)).fetchone()
+        if not row["photo_original"]:
+            raise HTTPException(400, "There's no original photo to go back to.")
+        conn.execute("UPDATE items SET photo = photo_original, photo_original = NULL WHERE id = ?", (item_id,))
+        item = get_item(conn, item_id)
+    delete_photo(row["photo"])
+    return item
 
 
 class ItemFlags(BaseModel):
@@ -322,11 +412,13 @@ def patch_item(item_id: int, flags: ItemFlags):
 @app.delete("/api/items/{item_id}")
 def delete_item(item_id: int):
     with db() as conn:
-        old = get_item(conn, item_id)
+        get_item(conn, item_id)
+        old_files = photo_files(conn, item_id)
         conn.execute("DELETE FROM items WHERE id = ?", (item_id,))
         conn.execute("DELETE FROM outfits WHERE id NOT IN (SELECT outfit_id FROM outfit_items)")
         conn.execute("DELETE FROM saved_outfits WHERE id NOT IN (SELECT saved_id FROM saved_outfit_items)")
-    delete_photo(old["photo"])
+    for f in old_files:
+        delete_photo(f)
     return {"ok": True}
 
 
@@ -532,7 +624,8 @@ def delete_saved(saved_id: int):
 def config():
     with db() as conn:
         saved = conn.execute("SELECT COUNT(*) FROM saved_outfits").fetchone()[0]
-    return {"ai_enabled": ai.enabled(), "ai_model": ai.model(), "saved_count": saved}
+    return {"ai_enabled": ai.enabled(), "ai_model": ai.model(), "saved_count": saved,
+            "cutout_enabled": cutout.available()}
 
 
 class AITestIn(BaseModel):

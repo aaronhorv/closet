@@ -495,3 +495,4 @@ dialog form { display: flex; flex-direction: column; max-height: calc(100dvh - 2
 @supports (-webkit-touch-callout: none) {
   input, select, textarea { font-size: 16px !important; }
 }
+.rate-row { display: flex; align-items: center; gap: 10px; }

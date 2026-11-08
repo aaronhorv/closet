@@ -121,6 +121,7 @@ EXTRA_SAVED_COLUMNS = {
     "source": "TEXT NOT NULL DEFAULT ''",      # ai | today | own
     "reason": "TEXT NOT NULL DEFAULT ''",      # why it was rejected
     "updated_at": "TEXT",                      # ideas are reviewed oldest first; "Later" bumps this
+    "rating": "INTEGER",                       # your own stars for the outfit (1-5)
 }
 EXTRA_LOG_COLUMNS = {"library_id": "INTEGER"}  # the outfit from your list that was worn
 STATUSES = ("idea", "kept", "rejected")
@@ -803,7 +804,9 @@ def fetch_library(conn, status: Optional[str] = None):
         st = stats.get(o["id"])
         o["times_worn"] = st["n"] if st else 0
         o["last_worn"] = st["last"] if st else None
-        o["avg_rating"] = round(st["avg"], 1) if st and st["avg"] is not None else None
+        worn_avg = round(st["avg"], 1) if st and st["avg"] is not None else None
+        # your own stars win; otherwise the average of the days you wore it
+        o["avg_rating"] = o["rating"] if o.get("rating") else worn_avg
     items = {i["id"]: i for i in fetch_items(conn)}
     links = {}
     for r in conn.execute("SELECT saved_id, item_id FROM saved_outfit_items"):
@@ -851,6 +854,7 @@ class LibraryPatch(BaseModel):
     status: Optional[str] = None
     reason: Optional[str] = None
     later: bool = False
+    rating: Optional[int] = None   # 0 clears it
 
 
 class WearIn(BaseModel):
@@ -959,6 +963,10 @@ def patch_library(oid: int, body: LibraryPatch):
             conn.execute("UPDATE saved_outfits SET reason = ? WHERE id = ?", (body.reason.strip()[:300], oid))
         if body.later:
             conn.execute("UPDATE saved_outfits SET updated_at = datetime('now', '+1 second') WHERE id = ?", (oid,))
+        if body.rating is not None:
+            if not 0 <= body.rating <= 5:
+                raise HTTPException(400, "Rating must be 1-5")
+            conn.execute("UPDATE saved_outfits SET rating = ? WHERE id = ?", (body.rating or None, oid))
         return library_entry(conn, oid)
 
 

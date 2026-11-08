@@ -618,6 +618,7 @@ function openOutfit(o) {
   const body = `<div class="detail outfit-card" data-detail="${ref}" data-kind="lib" data-ref="${ref}">
       ${cover}
       <div class="muted small">${esc(statsLine(o))}</div>
+      <div class="rate-row"><span class="muted small">Your rating</span><div class="stars" data-orate-for="${ref}">${starsHTML(o.rating || 0, 'data-orate')}</div></div>
       ${o.notes ? `<div class="outfit-note">${esc(o.notes)}</div>` : ''}
       <div class="card-tools left">${tools.join('')}</div>
       ${piecesHTML(o, k, ref, true)}
@@ -2048,6 +2049,18 @@ function init() {
   });
   // outfit tools and the viewer
   document.addEventListener('click', onOutfitTool);
+  $('#viewer-body').addEventListener('click', async (e) => {
+    const star = e.target.closest('[data-orate]');
+    if (!star) return;
+    const o = getOutfit('lib', Number(star.closest('[data-orate-for]').dataset.orateFor));
+    if (!o) return;
+    const n = Number(star.dataset.orate);
+    const rating = o.rating === n ? 0 : n; // tap the same star again to clear
+    if (await libPatch(o, { rating })) {
+      refreshDetail(o.id);
+      renderOutfits();
+    }
+  });
   ['#viewer-foot', '#viewer-body'].forEach((sel) => $(sel).addEventListener('click', (e) => {
     const b = e.target.closest('[data-vact]');
     if (b) viewerAction(b.dataset.vact, b);

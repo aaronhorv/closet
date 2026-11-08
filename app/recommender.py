@@ -8,8 +8,10 @@ import random
 from datetime import date
 from itertools import product
 
-CATEGORIES = ["top", "bottom", "dress", "outerwear", "shoes", "accessory"]
-DISPLAY_ORDER = ["outerwear", "top", "dress", "bottom", "shoes", "accessory"]
+from . import rules as rulebook
+from .kinds import BASE_KINDS, CATEGORIES, LAYER_KINDS
+
+DISPLAY_ORDER = ["outerwear", "suit", "top", "dress", "bottom", "shoes", "accessory"]
 
 NEUTRALS = (
     "black", "white", "grey", "gray", "charcoal", "navy", "beige", "cream", "ivory",
@@ -57,15 +59,15 @@ def _days_since(last, on: date):
         return None
 
 
-def _item_score(it, target, occasion, on, rainy):
-    gap = abs(it["formality"] - occasion)
+def _item_score(it, target, occasion, on, rainy, formality=None):
+    gap = abs((it["formality"] if formality is None else formality) - occasion)
     if gap >= 2:
         return None  # e.g. gym tee at a formal event
     warmth_weight = 0.6 if it["category"] == "accessory" else 1.2
     s = -abs(it["warmth"] - target) * warmth_weight - gap * 1.5
 
     # Jackets, shoes and accessories get re-worn daily, so repeats matter less.
-    repeat_weight = 0.3 if it["category"] in ("outerwear", "shoes", "accessory") else 1.0
+    repeat_weight = 0.3 if it["category"] in ("outerwear", "suit", "shoes", "accessory") else 1.0
     days = _days_since(it.get("last_worn"), on)
     if days is None:
         s += 0.8 * repeat_weight          # never worn: give it a chance
@@ -168,23 +170,35 @@ def _order(items):
     return sorted(items, key=lambda i: DISPLAY_ORDER.index(i["category"]))
 
 
-def recommend(items, occasion, temp, rainy, on: date, seed, outerwear_below=16.0, count=3):
+def history_key(items):
+    """What makes two outfits 'the same': the clothes, ignoring jackets and accessories that change with the weather."""
+    return frozenset(i["id"] for i in items if i["category"] not in ("outerwear", "accessory"))
+
+
+def recommend(items, occasion, temp, rainy, on: date, seed, outerwear_below=16.0, count=3,
+              rules=None, history=None):
+    """history: [{"key": frozenset, "rating": int|None, "notes": str}] from logged and saved outfits."""
     rng = random.Random(seed)
     active = [i for i in items if not i["archived"] and not i["in_laundry"]]
+    by_id = {i["id"]: i for i in active}
+    rules = rulebook.active(rules or [], occasion, temp)
 
     target = target_warmth(temp)
     need_outer = rainy or (temp is not None and temp < outerwear_below)
     base_target = max(1, target - 1) if need_outer else target
     o_target = outer_target(temp)
+    can_layer = temp is None or temp < 18
+    can_blazer = temp is None or temp < 25
 
-    pools = {}
-    for cat in CATEGORIES:
-        tgt = o_target if cat == "outerwear" else base_target
+    def pool(cat, tgt, keep, as_layer=False, formality_of=None):
         scored = []
         for it in active:
-            if it["category"] != cat:
+            if it["category"] != cat or not rulebook.item_ok(it, rules, as_layer):
                 continue
-            sc = _item_score(it, tgt, occasion, on, rainy)
+            if as_layer and (it.get("kind") or "") not in LAYER_KINDS:
+                continue
+            f = formality_of(it) if formality_of else None
+            sc = _item_score(it, tgt, occasion, on, rainy, f)
             if sc is not None:
                 scored.append((sc + rng.uniform(0, 1.5), it))  # jitter = variety
         # Drop pieces that are far too warm/cold for the day (t-shirt at 2°C),
@@ -193,7 +207,38 @@ def recommend(items, occasion, temp, rainy, on: date, seed, outerwear_below=16.0
             suitable = [p for p in scored if abs(p[1]["warmth"] - tgt) < 3]
             scored = suitable or scored
         scored.sort(key=lambda x: x[0], reverse=True)
-        pools[cat] = scored[:6]
+        return scored[:keep]
+
+    under_kinds = {k for r in rules if r["type"] == "under" for k in r["kinds"]}
+    pools = {
+        "top": [p for p in pool("top", base_target, 8) if (p[1].get("kind") or "") not in under_kinds][:6],
+        "layer": pool("top", base_target, 4, as_layer=True) if can_layer else [],
+        "bottom": pool("bottom", base_target, 6),
+        "dress": pool("dress", base_target, 6),
+        # a blazer alone counts one step less formal than as part of its suit
+        "suit": pool("suit", base_target, 4, formality_of=lambda it: max(1, it["formality"] - 1)) if can_blazer else [],
+        "outerwear": pool("outerwear", o_target, 4),
+        "shoes": pool("shoes", base_target, 5),
+        "accessory": pool("accessory", base_target, 6),
+    }
+
+    # scores of a jacket worn with its own trousers (full formality)
+    suit_scores = {}
+    for _, jacket in pools["suit"]:
+        sc = _item_score(jacket, base_target, occasion, on, rainy)
+        if sc is not None:
+            suit_scores[jacket["id"]] = sc + rng.uniform(0, 1.5)
+        mate = by_id.get(jacket.get("match_id"))
+        # make sure the matching trousers are on the table
+        if (mate and mate["category"] == "bottom" and rulebook.item_ok(mate, rules)
+                and all(p[1]["id"] != mate["id"] for p in pools["bottom"])):
+            sc = _item_score(mate, base_target, occasion, on, rainy)
+            if sc is not None:
+                pools["bottom"].append((sc, mate))
+    # a pair-only bottom whose jacket can't come along is out
+    pools["bottom"] = [p for p in pools["bottom"] if not (
+        p[1].get("pair_only") and not any(j["id"] == p[1].get("match_id") for _, j in pools["suit"]))]
+    pools["suit"] = [p for p in pools["suit"] if p[1]["id"] in suit_scores or not p[1].get("pair_only")]
 
     has_outer = bool(pools["outerwear"])
     result = {
@@ -205,42 +250,79 @@ def recommend(items, occasion, temp, rainy, on: date, seed, outerwear_below=16.0
         "message": "",
     }
 
-    templates = []
+    bases = []
     if pools["top"] and pools["bottom"]:
-        templates.append(["top", "bottom"])
+        bases.append(("top", [None] + pools["layer"]))
     if pools["dress"]:
-        templates.append(["dress"])
-    if not templates:
+        bases.append(("dress", [None]))
+    if not bases:
         if not any(i["category"] in ("top", "bottom", "dress") for i in items if not i["archived"]):
             result["message"] = "Add at least one top and one bottom (or a dress) to get suggestions."
+        elif rules:
+            result["message"] = ("No outfit fits your rules for this occasion and weather. Check Settings → "
+                                 "Outfit rules, or the types of your clothes.")
         else:
             result["message"] = ("Not enough clean pieces that suit this occasion. "
                                  "Try another occasion or clear your laundry.")
         return result
 
-    extras = []
-    if pools["shoes"]:
-        extras.append("shoes")
-    if need_outer and has_outer:
-        extras.append("outerwear")
+    shoes = pools["shoes"] or [None]
+    outers = pools["outerwear"] if need_outer and has_outer else [None]
+    jackets = [None] + pools["suit"]
+    hist = {}
+    for h in history or []:
+        hist.setdefault(h["key"], h)  # newest first
 
     combos = []
-    for tpl in templates:
-        cats = tpl + extras
-        for picks in product(*(pools[c] for c in cats)):
-            its = [p[1] for p in picks]
-            base = sum(p[0] for p in picks) / len(picks)
+    for kind, layers in bases:
+        main = pools["top"] if kind == "top" else pools["dress"]
+        bottoms = pools["bottom"] if kind == "top" else [None]
+        for picks in product(main, layers, bottoms, jackets, shoes, outers):
+            chosen = [p for p in picks if p is not None]
+            its = [p[1] for p in chosen]
+            if len({i["id"] for i in its}) < len(its):
+                continue  # the same sweater as base and layer
+            scores = [p[0] for p in chosen]
             forms = [i["formality"] for i in its]
-            total = base + _harmony(its) - 0.5 * (max(forms) - min(forms)) + rng.uniform(0, 0.4)
-            combos.append((total, its))
+            bonus = 0.0
+            suited = None
+            jacket = picks[3][1] if picks[3] else None
+            bottom = picks[2][1] if picks[2] else None
+            if jacket is not None:
+                j = its.index(jacket)
+                if bottom is not None and jacket.get("match_id") == bottom["id"]:
+                    if jacket["id"] not in suit_scores:
+                        continue
+                    scores[j] = suit_scores[jacket["id"]]
+                    bonus += 0.8
+                    suited = (jacket, bottom)
+                else:
+                    if jacket.get("pair_only"):
+                        continue
+                    forms[j] = max(1, jacket["formality"] - 1)
+            if bottom is not None and bottom.get("pair_only") and not (jacket and jacket["id"] == bottom.get("match_id")):
+                continue
+            if rules and rulebook.broken(its, rules):
+                continue
+            past = hist.get(history_key(its))
+            if past and past.get("rating"):
+                bonus += 0.6 if past["rating"] >= 4 else (-1.2 if past["rating"] <= 2 else 0)
+            total = (sum(scores) / len(scores) + _harmony(its) - 0.5 * (max(forms) - min(forms))
+                     + bonus + rng.uniform(0, 0.4))
+            combos.append((total, its, suited, past))
     combos.sort(key=lambda c: c[0], reverse=True)
+
+    if not combos:
+        result["message"] = ("No outfit fits your rules for this occasion and weather. Check Settings → "
+                             "Outfit rules, or the types of your clothes.")
+        return result
 
     def key_piece(its):
         return next(i["id"] for i in its if i["category"] in ("top", "dress"))
 
     chosen = []
     for strict in (True, False):
-        for total, its in combos:
+        for total, its, suited, past in combos:
             if len(chosen) >= count:
                 break
             ids = {i["id"] for i in its}
@@ -248,18 +330,28 @@ def recommend(items, occasion, temp, rainy, on: date, seed, outerwear_below=16.0
                 continue
             if strict and any(key_piece(its) == c["key"] or len(ids & c["ids"]) > 2 for c in chosen):
                 continue
-            chosen.append({"ids": ids, "key": key_piece(its), "items": its, "score": total})
+            chosen.append({"ids": ids, "key": key_piece(its), "items": its, "score": total,
+                           "suited": suited, "past": past})
 
     used_acc = set()
     for c in chosen:
         for sc, acc in pools["accessory"]:
-            if acc["id"] not in used_acc and sc > -1:
+            if acc["id"] not in used_acc and sc > -1 and not (rules and rulebook.broken(c["items"] + [acc], rules)):
                 c["items"] = c["items"] + [acc]
                 used_acc.add(acc["id"])
                 break
 
-    result["outfits"] = [
-        {"items": _order(c["items"]), "score": round(c["score"], 2), "notes": _notes(c["items"], on)}
-        for c in chosen
-    ]
+    out = []
+    for c in chosen:
+        notes = _notes(c["items"], on)
+        if c["suited"]:
+            notes.insert(0, f"Worn as a suit: {c['suited'][0]['name']} with {c['suited'][1]['name']}.")
+        past = c["past"]
+        if past:
+            if past.get("notes"):
+                notes.insert(0, f"Your note: “{past['notes'][:200]}”")
+            if past.get("rating"):
+                notes.append(f"You rated this {past['rating']}★ last time.")
+        out.append({"items": _order(c["items"]), "score": round(c["score"], 2), "notes": notes})
+    result["outfits"] = out
     return result

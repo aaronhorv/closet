@@ -1,22 +1,24 @@
 'use strict';
 
 const CATS = [
-  ['top', 'Tops', '👕'], ['bottom', 'Bottoms', '👖'], ['dress', 'Dresses', '👗'],
+  ['top', 'Tops', '👕'], ['bottom', 'Bottoms', '👖'], ['dress', 'Dresses', '👗'], ['suit', 'Suits & blazers', '🤵'],
   ['outerwear', 'Outerwear', '🧥'], ['shoes', 'Shoes', '👟'], ['accessory', 'Accessories', '👜'],
 ];
 const CAT_LABEL = Object.fromEntries(CATS.map(([k, l]) => [k, l]));
 const CAT_ICON = Object.fromEntries(CATS.map(([k, , i]) => [k, i]));
-const SINGULAR = { top: 'Top', bottom: 'Bottom', dress: 'Dress / one-piece', outerwear: 'Outerwear', shoes: 'Shoes', accessory: 'Accessory' };
+const SINGULAR = { top: 'Top', bottom: 'Bottom', dress: 'Dress / one-piece', suit: 'Suit / blazer', outerwear: 'Outerwear', shoes: 'Shoes', accessory: 'Accessory' };
 const OCCASIONS = { 1: 'Casual', 2: 'Smart casual', 3: 'Formal' };
 const WARMTH = ['', 'Very light', 'Light', 'Medium', 'Warm', 'Very warm'];
-const ORDER = ['outerwear', 'top', 'dress', 'bottom', 'shoes', 'accessory'];
+const ORDER = ['outerwear', 'suit', 'top', 'dress', 'bottom', 'shoes', 'accessory'];
+const kindLabel = (k) => (k ? k[0].toUpperCase() + k.slice(1) : '');
 const TITLES = { today: 'Today', closet: 'Closet', history: 'History', outfits: 'Outfits' };
 
 const state = {
   view: 'today', items: [], settings: { unit: 'C' },
   occasion: 2, day: 0, shuffle: 0,
   filter: 'all', search: '',
-  ai: false, aiResults: null, saved: [],
+  ai: false, aiResults: null, saved: [], history: [],
+  kinds: {}, layerKinds: [],
 };
 
 const $ = (s, el = document) => el.querySelector(s);
@@ -232,7 +234,7 @@ function renderCloset() {
   if (state.filter === 'laundry') list = list.filter((i) => i.in_laundry);
   else if (CAT_LABEL[state.filter]) list = list.filter((i) => i.category === state.filter);
   const q = state.search.trim().toLowerCase();
-  if (q) list = list.filter((i) => [i.name, i.color, i.color2, i.brand, i.material, i.pattern, i.tags, i.notes].join(' ').toLowerCase().includes(q));
+  if (q) list = list.filter((i) => [i.name, i.kind, i.color, i.color2, i.brand, i.material, i.pattern, i.tags, i.notes].join(' ').toLowerCase().includes(q));
   list = [...list].sort(byOrder);
 
   const grid = $('#closet-grid');
@@ -257,6 +259,7 @@ function renderCloset() {
       ${it.favorite ? '<span class="fav" aria-label="Favorite">♥</span>' : ''}
       <div class="item-meta">
         <div class="item-name">${esc(it.name)}</div>
+        ${it.kind || it.match_id ? `<div class="muted small item-kind">${esc([kindLabel(it.kind), it.match_id ? '🔗 Suit' : ''].filter(Boolean).join(' · '))}</div>` : ''}
         <div class="muted small">${it.times_worn ? `Worn ${it.times_worn}× · ${agoText(it.last_worn)}` : 'Not worn yet'}</div>
       </div>
     </div>`).join('');
@@ -287,6 +290,45 @@ function setPreview(url) {
   $('#remove-photo-btn').hidden = !url;
 }
 
+function updateKindOptions(want) {
+  const f = $('#item-form');
+  const opts = state.kinds[f.category.value] || [];
+  const cur = want === undefined ? f.kind.value : want;
+  f.kind.innerHTML = '<option value="">–</option>' + opts.map((k) => `<option value="${esc(k)}">${esc(kindLabel(k))}</option>`).join('');
+  f.kind.value = opts.includes(cur) ? cur : '';
+  updateSuitBox();
+}
+
+function updateSuitBox(want) {
+  const f = $('#item-form');
+  const cat = f.category.value;
+  const other = { suit: 'bottom', bottom: 'suit' }[cat];
+  $('#suit-box').hidden = !other;
+  if (!other) { f.match_id.value = ''; return; }
+  const cur = want === undefined ? f.match_id.value : String(want ?? '');
+  const options = state.items
+    .filter((i) => i.category === other && !i.archived && i.id !== editing?.id)
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const taken = (i) => (i.match_id && i.match_id !== editing?.id ? ` (now with ${state.items.find((x) => x.id === i.match_id)?.name || 'another'})` : '');
+  f.match_id.innerHTML = `<option value="">${cat === 'suit' ? 'Not part of a suit' : 'No matching jacket'}</option>`
+    + options.map((i) => `<option value="${i.id}">${esc(i.name + taken(i))}</option>`).join('');
+  f.match_id.value = options.some((i) => String(i.id) === cur) ? cur : '';
+  $('#match-label').textContent = cat === 'suit' ? 'Matching trousers (makes it a suit)' : 'Matching suit jacket';
+  updatePairOnly();
+}
+
+function updatePairOnly() {
+  const f = $('#item-form');
+  const linked = !!f.match_id.value;
+  $('#pair-only-check').hidden = !linked;
+  if (!linked) f.pair_only.checked = false;
+  $('#suit-hint').textContent = !linked
+    ? (f.category.value === 'suit' ? 'Pick the trousers that belong to this jacket, if any.' : '')
+    : (f.category.value === 'suit'
+      ? 'Worn with its trousers it counts as formal; worn alone, one step less formal.'
+      : 'Suggested together with the jacket; can also be worn on its own unless you tick the box.');
+}
+
 function openItem(it = null) {
   editing = it;
   pendingPhoto = null;
@@ -296,6 +338,10 @@ function openItem(it = null) {
   $('#item-dialog-title').textContent = it ? 'Edit item' : 'Add item';
   f.name.value = it?.name || '';
   f.category.value = it?.category || (CAT_LABEL[state.filter] ? state.filter : 'top');
+  updateKindOptions(it?.kind || '');
+  updateSuitBox(it?.match_id ?? '');
+  f.pair_only.checked = !!it?.pair_only;
+  updatePairOnly();
   f.color.value = it?.color || '';
   f.warmth.value = it?.warmth || 3;
   $('#warmth-label').textContent = WARMTH[f.warmth.value];
@@ -330,7 +376,8 @@ async function saveItem(e) {
   fd.append('warmth', f.warmth.value);
   fd.append('formality', segValue($('#formality-seg')) || 2);
   fd.append('brand', f.brand.value);
-  ['material', 'fit', 'pattern', 'color2'].forEach((k) => fd.append(k, f[k].value));
+  ['kind', 'match_id', 'material', 'fit', 'pattern', 'color2'].forEach((k) => fd.append(k, f[k].value));
+  fd.append('pair_only', f.pair_only.checked ? 'true' : 'false');
   fd.append('tags', f.tags.value);
   fd.append('notes', f.notes.value);
   fd.append('favorite', f.favorite.checked ? 'true' : 'false');
@@ -378,6 +425,7 @@ async function renderHistory() {
   const box = $('#history-list');
   box.innerHTML = '<div class="loading">Loading…</div>';
   const outfits = await api('/api/outfits');
+  state.history = outfits;
   if (!outfits.length) {
     box.innerHTML = '<div class="card empty">No outfits logged yet. Tap “Wear this” on the Today tab or log one here.</div>';
     return;
@@ -391,10 +439,12 @@ async function renderHistory() {
         <div class="hist-top">
           <div class="stars" aria-label="Rating">${starsHTML(o.rating || 0, 'data-rate')}</div>
           <div><span class="muted small">${esc(OCCASIONS[o.occasion] || '')}</span>
+          <button class="icon-btn" data-edit="${o.id}" aria-label="Edit outfit" title="Edit or add a note">✎</button>
           <button class="icon-btn" data-del="${o.id}" aria-label="Delete outfit" title="Delete">✕</button></div>
         </div>
         <div class="hist-items">${o.items.map((it) => thumb(it, 'sm')).join('')}</div>
         <div class="hist-names">${o.items.map((it) => esc(it.name)).join(' · ')}</div>
+        ${o.notes ? `<div class="hist-note">${esc(o.notes)}</div>` : ''}
       </article>`;
   }
   box.innerHTML = html;
@@ -403,20 +453,31 @@ async function renderHistory() {
 // ---------- log outfit ----------
 let picked = new Set();
 let logRating = 0;
+let logEdit = null; // null = new log, {kind: 'history'|'saved', id}
 
-function openLog() {
-  picked = new Set();
-  logRating = 0;
+function openLog(outfit = null, kind = 'history') {
+  logEdit = outfit ? { kind, id: outfit.id } : null;
+  picked = new Set(outfit ? outfit.items.map((i) => i.id) : []);
+  logRating = (kind === 'history' && outfit?.rating) || 0;
   const f = $('#log-form');
-  f.worn_on.value = dayDate(0);
-  f.occasion.value = String(state.occasion);
-  $('#log-stars').innerHTML = starsHTML(0, 'data-star');
-  const active = state.items.filter((i) => !i.archived);
+  const savedMode = !!outfit && kind === 'saved';
+  $('#log-title').textContent = !outfit ? 'Log an outfit' : (savedMode ? 'Edit saved outfit' : 'Edit outfit');
+  $('#log-save-btn').textContent = outfit ? 'Save changes' : 'Save outfit';
+  $('#log-name-field').hidden = !savedMode;
+  $('#log-date-field').hidden = savedMode;
+  $('#log-stars-field').hidden = savedMode;
+  f.outfit_name.value = savedMode ? outfit.name || '' : '';
+  f.worn_on.value = outfit?.worn_on || dayDate(0);
+  f.occasion.value = String(outfit?.occasion || state.occasion);
+  f.notes.value = outfit?.notes || '';
+  $('#log-stars').innerHTML = starsHTML(logRating, 'data-star');
+  // pieces of this outfit stay pickable even if archived since
+  const active = state.items.filter((i) => !i.archived || picked.has(i.id));
   $('#picker').innerHTML = active.length ? CATS.map(([k, label]) => {
     const its = active.filter((i) => i.category === k).sort(byOrder);
     if (!its.length) return '';
     return `<div><h4>${label}</h4><div class="picker-grid">${its.map((it) =>
-      `<button type="button" class="pick" data-pick="${it.id}">${thumb(it)}<span>${esc(it.name)}</span></button>`).join('')}</div></div>`;
+      `<button type="button" class="pick ${picked.has(it.id) ? 'on' : ''}" data-pick="${it.id}">${thumb(it)}<span>${esc(it.name)}</span></button>`).join('')}</div></div>`;
   }).join('') : '<div class="muted">Add items to your closet first.</div>';
   updatePickCount();
   $('#log-dialog').showModal();
@@ -428,12 +489,16 @@ async function saveLog(e) {
   e.preventDefault();
   if (!picked.size) { toast('Pick at least one piece'); return; }
   const f = e.target;
+  const base = { item_ids: [...picked], occasion: Number(f.occasion.value), notes: f.notes.value };
   try {
-    await api('/api/outfits', sendJSON('POST', {
-      item_ids: [...picked], worn_on: f.worn_on.value, occasion: Number(f.occasion.value), rating: logRating || null,
-    }));
+    if (logEdit?.kind === 'saved') {
+      await api(`/api/saved/${logEdit.id}`, sendJSON('PUT', { ...base, name: f.outfit_name.value }));
+    } else {
+      const body = { ...base, worn_on: f.worn_on.value || dayDate(0), rating: logRating || null };
+      await api(logEdit ? `/api/outfits/${logEdit.id}` : '/api/outfits', sendJSON(logEdit ? 'PUT' : 'POST', body));
+    }
     $('#log-dialog').close();
-    toast('Outfit logged');
+    toast(logEdit ? 'Saved' : 'Outfit logged');
     await loadItems();
     render();
   } catch (err) { toast(err.message); }
@@ -443,10 +508,11 @@ async function saveLog(e) {
 function outfitCard(o, idx, kind) {
   const head = (o.name || kind === 'saved') ? `
     <div class="outfit-head"><h3>${esc(o.name || 'Outfit')}</h3>
-      ${kind === 'saved' ? `<button class="icon-btn" data-del-saved="${o.id}" aria-label="Delete outfit" title="Delete">✕</button>` : ''}</div>` : '';
+      ${kind === 'saved' ? `<div><button class="icon-btn" data-edit-saved="${idx}" aria-label="Edit outfit" title="Edit or add a note">✎</button><button class="icon-btn" data-del-saved="${o.id}" aria-label="Delete outfit" title="Delete">✕</button></div>` : ''}</div>` : '';
   const unavailable = o.items.filter((it) => it.in_laundry || it.archived);
-  const notes = [o.notes || o.reason, unavailable.length ? `Not available now: ${unavailable.map((it) => it.name).join(', ')}` : '']
+  const notes = [kind === 'saved' ? '' : o.reason, unavailable.length ? `Not available now: ${unavailable.map((it) => it.name).join(', ')}` : '']
     .filter(Boolean);
+  const userNote = kind === 'saved' && o.notes ? `<div class="outfit-note">${esc(o.notes)}</div>` : '';
   const save = kind === 'ai' ? `<button class="btn" data-save="${idx}" ${o.saved ? 'disabled' : ''}>${o.saved ? 'Saved ✓' : 'Save'}</button>` : '';
   return `
     <article class="card outfit">
@@ -454,6 +520,7 @@ function outfitCard(o, idx, kind) {
       <div class="outfit-items">
         ${o.items.map((it) => `<figure class="${it.in_laundry || it.archived ? 'dirty' : ''}">${thumb(it)}<figcaption>${esc(it.name)}</figcaption></figure>`).join('')}
       </div>
+      ${userNote}
       ${notes.length ? `<ul class="notes">${notes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul>` : ''}
       <div class="outfit-actions">${save}<button class="btn primary" data-wear-${kind}="${idx}">Wear this</button></div>
     </article>`;
@@ -510,7 +577,7 @@ async function wearOutfit(o, btn) {
   try {
     await api('/api/outfits', sendJSON('POST', {
       item_ids: o.items.map((i) => i.id), worn_on: dayDate(0),
-      occasion: Math.round(forms.reduce((a, b) => a + b, 0) / forms.length) || 2,
+      occasion: o.occasion || Math.round(forms.reduce((a, b) => a + b, 0) / forms.length) || 2,
     }));
     btn.textContent = 'Logged ✓';
     toast('Logged. Rate it later in History.');
@@ -524,7 +591,7 @@ async function wearOutfit(o, btn) {
 async function saveAIOutfit(o, btn) {
   btn.disabled = true;
   try {
-    await api('/api/saved', sendJSON('POST', { item_ids: o.items.map((i) => i.id), name: o.name, notes: o.reason }));
+    await api('/api/saved', sendJSON('POST', { item_ids: o.items.map((i) => i.id), name: o.name, notes: o.reason, occasion: o.occasion }));
     o.saved = true;
     btn.textContent = 'Saved ✓';
     renderSaved();
@@ -539,11 +606,13 @@ const FORM_KEYS = ['name', 'category', 'color', 'color2', 'pattern', 'material',
 
 function fillItemForm(d, overwrite) {
   const f = $('#item-form');
+  const kindBefore = f.kind.value;
   FORM_KEYS.forEach((k) => {
     if (d[k] === undefined || d[k] === null) return;
     if (!overwrite && !d[k]) return; // don't blank out what the user typed
     f[k].value = d[k];
   });
+  updateKindOptions(d.kind || (overwrite ? '' : kindBefore));
   if (d.warmth) { f.warmth.value = d.warmth; $('#warmth-label').textContent = WARMTH[d.warmth]; }
   if (d.formality) setSeg($('#formality-seg'), d.formality);
 }
@@ -974,7 +1043,7 @@ async function saveBulk(e) {
     fd.append('name', r.name.trim() || `Item ${r.id}`);
     fd.append('category', r.category);
     const f = r.fields;
-    ['color', 'color2', 'pattern', 'material', 'fit', 'brand'].forEach((k) => { if (f[k]) fd.append(k, f[k]); });
+    ['kind', 'color', 'color2', 'pattern', 'material', 'fit', 'brand'].forEach((k) => { if (f[k]) fd.append(k, f[k]); });
     if (f.warmth) fd.append('warmth', f.warmth);
     if (f.formality) fd.append('formality', f.formality);
     if (f.tags) fd.append('tags', Array.isArray(f.tags) ? f.tags.join(', ') : f.tags);
@@ -1078,6 +1147,107 @@ function bindPageDrop() {
   });
 }
 
+// ---------- outfit rules ----------
+const RULE_OCC = { 0: '', 1: 'Casual', 2: 'Work', 3: 'Formal' };
+
+function ruleText(r) {
+  const kinds = r.kinds.map((k) => k).join(' or ');
+  let text;
+  if (r.type === 'only') text = `${CAT_LABEL[r.category].toLowerCase()} only ${kinds}`;
+  else if (r.type === 'never') text = `no ${kinds}`;
+  else text = `${kinds} always over another top`;
+  const t = (c) => `${Math.round(toDisplay(c))}°`;
+  if (r.below !== null && r.below !== undefined) text += `, when colder than ${t(r.below)}`;
+  if (r.above !== null && r.above !== undefined) text += `, when warmer than ${t(r.above)}`;
+  const occ = RULE_OCC[r.occasion];
+  return occ ? `${occ}: ${text}` : text[0].toUpperCase() + text.slice(1);
+}
+
+function renderRules() {
+  const rules = state.settings.rules || [];
+  $('#rules-list').innerHTML = rules.length
+    ? rules.map((r, i) => `<div class="rule-row"><span>${esc(ruleText(r))}</span>
+        <button type="button" class="icon-btn" data-del-rule="${i}" aria-label="Remove rule" title="Remove">✕</button></div>`).join('')
+    : '<div class="muted small">No rules yet.</div>';
+  // pieces without a type can't pass an "only" rule
+  const cats = new Set(rules.filter((r) => r.type === 'only').map((r) => r.category));
+  const untyped = state.items.filter((i) => !i.archived && cats.has(i.category) && !i.kind);
+  $('#rules-untyped').textContent = untyped.length
+    ? `${untyped.length} item${untyped.length > 1 ? 's have' : ' has'} no type yet, so those rules leave ${untyped.length > 1 ? 'them' : 'it'} out: `
+      + untyped.slice(0, 6).map((i) => i.name).join(', ') + (untyped.length > 6 ? '…' : '') + '. Set the type in the item.'
+    : '';
+}
+
+async function saveRules(rules, msg) {
+  try {
+    state.settings = await api('/api/settings', sendJSON('PUT', { rules }));
+    renderRules();
+    toast(msg);
+    if (state.view === 'today') renderToday();
+    return true;
+  } catch (e) {
+    toast(e.message);
+    return false;
+  }
+}
+
+function setupRuleBuilder() {
+  $('#rule-category').innerHTML = CATS.filter(([k]) => (state.kinds[k] || []).length)
+    .map(([k, l]) => `<option value="${k}">${l}</option>`).join('');
+  $('#rule-category').value = 'top';
+  $$('.rule-unit').forEach((el) => { el.textContent = `°${state.settings.unit}`; });
+  $('#rule-temp').value = Math.round(toDisplay(10));
+  $('#rule-temp-mode').value = '';
+  $('#rule-type').value = 'only';
+  $('#rule-occasion').value = '2';
+  $('#rule-status').textContent = '';
+  updateRuleBuilder();
+}
+
+function ruleDraft() {
+  const type = $('#rule-type').value;
+  const mode = $('#rule-temp-mode').value;
+  const temp = Number($('#rule-temp').value);
+  const c = Math.round(fromDisplay(temp) * 10) / 10;
+  return {
+    type,
+    occasion: Number($('#rule-occasion').value),
+    category: type === 'under' ? 'top' : $('#rule-category').value,
+    kinds: $$('#rule-kinds .chip.on').map((b) => b.dataset.kind),
+    below: mode === 'below' ? c : null,
+    above: mode === 'above' ? c : null,
+  };
+}
+
+function updateRuleBuilder(keepKinds = false) {
+  const type = $('#rule-type').value;
+  $('#rule-cat-field').hidden = type === 'under';
+  const cat = type === 'under' ? 'top' : $('#rule-category').value;
+  const kinds = type === 'under' ? state.layerKinds : (state.kinds[cat] || []);
+  const on = keepKinds ? new Set($$('#rule-kinds .chip.on').map((b) => b.dataset.kind)) : new Set();
+  $('#rule-kinds').innerHTML = kinds.map((k) => `<button type="button" class="chip ${on.has(k) ? 'on' : ''}" data-kind="${esc(k)}">${esc(kindLabel(k))}</button>`).join('');
+  $('#rule-kinds-hint').textContent = { only: '(tap all that are allowed)', never: '(tap what to avoid)', under: '(tap what needs a layer under it)' }[type];
+  $('#rule-temp-field').hidden = !$('#rule-temp-mode').value;
+  updateRulePreview();
+}
+
+function updateRulePreview() {
+  const d = ruleDraft();
+  $('#rule-preview').textContent = d.kinds.length ? `Rule: ${ruleText(d)}` : '';
+}
+
+async function addRule() {
+  const d = ruleDraft();
+  const status = $('#rule-status');
+  if (!d.kinds.length) { status.textContent = 'Tap at least one type.'; status.classList.add('error'); return; }
+  if ((d.below !== null || d.above !== null) && Number.isNaN(d.below ?? d.above)) { status.textContent = 'Enter a temperature.'; status.classList.add('error'); return; }
+  status.textContent = '';
+  if (await saveRules([...(state.settings.rules || []), d], 'Rule added')) {
+    $('#rule-add').open = false;
+    setupRuleBuilder();
+  }
+}
+
 // ---------- SETTINGS ----------
 let pendingLoc = null;
 
@@ -1099,6 +1269,9 @@ function openSettings() {
   $('#default-model').textContent = (s.ai_models || ['gpt-6.1-terra'])[0];
   removeKey = false;
   showKeyStatus();
+  $('#rule-add').open = false;
+  setupRuleBuilder();
+  renderRules();
   $('#test-result').textContent = '';
   $('#settings-dialog').showModal();
 }
@@ -1174,6 +1347,8 @@ async function loadConfig() {
   const cfg = await api('/api/config');
   state.ai = cfg.ai_enabled;
   state.cutout = cfg.cutout_enabled;
+  state.kinds = cfg.kinds || {};
+  state.layerKinds = cfg.layer_kinds || [];
   $('#outfits-tab').hidden = !(cfg.ai_enabled || cfg.saved_count);
 }
 async function loadItems() { state.items = await api('/api/items?include_archived=true'); }
@@ -1212,6 +1387,8 @@ function init() {
   const f = $('#item-form');
   f.category.innerHTML = CATS.map(([k]) => `<option value="${k}">${SINGULAR[k]}</option>`).join('');
   f.warmth.addEventListener('input', () => { $('#warmth-label').textContent = WARMTH[f.warmth.value]; });
+  f.category.addEventListener('change', () => updateKindOptions());
+  f.match_id.addEventListener('change', updatePairOnly);
   bindSeg($('#formality-seg'), () => {});
   f.photo.addEventListener('change', () => { if (f.photo.files[0]) usePhoto(f.photo.files[0]); });
   dropTarget($('#photo-preview'), (files) => usePhoto(files[0]));
@@ -1270,7 +1447,9 @@ function init() {
   $('#saved-list').addEventListener('click', async (e) => {
     const w = e.target.closest('[data-wear-saved]');
     const d = e.target.closest('[data-del-saved]');
-    if (w) wearOutfit(state.saved[Number(w.dataset.wearSaved)], w);
+    const ed = e.target.closest('[data-edit-saved]');
+    if (ed) openLog(state.saved[Number(ed.dataset.editSaved)], 'saved');
+    else if (w) wearOutfit(state.saved[Number(w.dataset.wearSaved)], w);
     else if (d) {
       if (!confirm('Delete this saved outfit?')) return;
       await api(`/api/saved/${d.dataset.delSaved}`, { method: 'DELETE' });
@@ -1282,11 +1461,14 @@ function init() {
   $('#delete-btn').onclick = deleteItem;
 
   // history
-  $('#log-outfit-btn').onclick = openLog;
+  $('#log-outfit-btn').onclick = () => openLog();
   $('#history-list').addEventListener('click', async (e) => {
     const rate = e.target.closest('[data-rate]');
     const del = e.target.closest('[data-del]');
-    if (rate) {
+    const edit = e.target.closest('[data-edit]');
+    if (edit) {
+      openLog(state.history.find((o) => o.id === Number(edit.dataset.edit)), 'history');
+    } else if (rate) {
       const card = rate.closest('[data-outfit]');
       const n = Number(rate.dataset.rate);
       await api(`/api/outfits/${card.dataset.outfit}`, sendJSON('PATCH', { rating: n }));
@@ -1329,6 +1511,25 @@ function init() {
   $('#loc-search-btn').onclick = searchLocation;
   $('#loc-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); searchLocation(); } });
   $('#settings-form').addEventListener('submit', saveSettings);
+  $('#rule-type').addEventListener('change', () => updateRuleBuilder());
+  $('#rule-category').addEventListener('change', () => updateRuleBuilder());
+  $('#rule-occasion').addEventListener('change', updateRulePreview);
+  $('#rule-temp-mode').addEventListener('change', () => updateRuleBuilder(true));
+  $('#rule-temp').addEventListener('input', updateRulePreview);
+  $('#rule-kinds').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-kind]');
+    if (!b) return;
+    b.classList.toggle('on');
+    updateRulePreview();
+  });
+  $('#rule-add-btn').onclick = addRule;
+  $('#rules-list').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-del-rule]');
+    if (!b) return;
+    const rules = [...(state.settings.rules || [])];
+    rules.splice(Number(b.dataset.delRule), 1);
+    saveRules(rules, 'Rule removed');
+  });
   $('#test-key-btn').onclick = testKey;
   $('#remove-key-btn').onclick = () => { removeKey = true; $('#settings-form').openai_key.value = ''; showKeyStatus(); };
 }

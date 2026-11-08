@@ -10,7 +10,8 @@ import os
 
 from PIL import Image
 
-from .recommender import CATEGORIES
+from . import rules as rulebook
+from .kinds import ALL_KINDS, CATEGORIES, clean_kind, guess_kind
 
 ENV_KEY = os.environ.get("OPENAI_API_KEY", "")
 ENV_MODEL = os.environ.get("AI_MODEL", "")
@@ -135,6 +136,7 @@ DESCRIBE_SCHEMA = {
         "is_clothing": {"type": "boolean"},
         "name": {"type": "string"},
         "category": {"type": "string", "enum": CATEGORIES},
+        "kind": {"type": "string", "enum": ALL_KINDS + [""]},
         "color": {"type": "string"},
         "color2": {"type": "string"},
         "pattern": {"type": "string", "enum": PATTERNS},
@@ -145,7 +147,7 @@ DESCRIBE_SCHEMA = {
         "formality": {"type": "integer", "enum": [1, 2, 3]},
         "tags": {"type": "array", "items": {"type": "string"}},
     },
-    "required": ["is_clothing", "name", "category", "color", "color2", "pattern", "material", "fit",
+    "required": ["is_clothing", "name", "category", "kind", "color", "color2", "pattern", "material", "fit",
                  "brand", "warmth", "formality", "tags"],
     "additionalProperties": False,
 }
@@ -153,7 +155,8 @@ DESCRIBE_SCHEMA = {
 DESCRIBE_INSTRUCTIONS = """You catalog clothes for a personal closet app. Describe the main clothing item shown.
 - is_clothing: false if it isn't a clothing item, shoes or accessory.
 - name: short and specific, 2-5 words, e.g. "Navy oxford shirt", "Black leather Chelsea boots". No brand in the name.
-- category: top (shirts, t-shirts, sweaters, hoodies), bottom (trousers, jeans, shorts, skirts), dress (dresses, jumpsuits), outerwear (jackets, coats, blazers), shoes, accessory (bags, belts, hats, scarves, jewelry).
+- category: top (shirts, t-shirts, sweaters, hoodies), bottom (trousers, jeans, shorts, skirts), dress (dresses, jumpsuits), suit (blazers, suit jackets, waistcoats), outerwear (coats, jackets, parkas), shoes, accessory (bags, belts, hats, scarves, ties, jewelry).
+- kind: the type within the category. top: t-shirt, shirt, polo, turtleneck, blouse, tank top, sweater, cardigan, sweatshirt, hoodie. bottom: jeans, chinos, trousers, suit trousers, shorts, skirt, joggers. dress: dress, jumpsuit. suit: suit jacket, blazer, waistcoat. outerwear: coat, jacket, parka, raincoat, overshirt, gilet. shoes: sneakers, formal shoes (oxfords, derbies, brogues, heels), loafers, boots, sandals. accessory: belt, tie, scarf, hat, bag, watch, jewelry, gloves. "" if none fits.
 - color: the main color as one or two plain words, lower case (e.g. "navy", "light blue", "olive").
 - color2: a clearly visible second color (e.g. the stripes or a contrasting trim), lower case, or "" if there isn't one.
 - pattern: solid, striped, checked (incl. plaid, gingham, houndstooth), floral, print (graphic, logo, animal, abstract), or other.
@@ -189,6 +192,8 @@ def _clean_description(data: dict) -> dict:
     return {
         "name": str(data.get("name") or "").strip()[:120],
         "category": category if category in CATEGORIES else "top",
+        "kind": (clean_kind(data.get("kind"), category if category in CATEGORIES else "top")
+                 or guess_kind(str(data.get("name") or ""), category if category in CATEGORIES else "top")),
         "color": str(data.get("color") or "").strip().lower()[:40],
         "color2": str(data.get("color2") or "").strip().lower()[:40],
         "pattern": pattern if pattern in PATTERNS else "",
@@ -240,9 +245,10 @@ OUTFITS_SCHEMA = {
                 "properties": {
                     "name": {"type": "string"},
                     "item_ids": {"type": "array", "items": {"type": "integer"}},
+                    "occasion": {"type": "integer", "enum": [1, 2, 3]},
                     "reason": {"type": "string"},
                 },
-                "required": ["name", "item_ids", "reason"],
+                "required": ["name", "item_ids", "occasion", "reason"],
                 "additionalProperties": False,
             },
         },
@@ -254,6 +260,12 @@ OUTFITS_SCHEMA = {
 OUTFITS_INSTRUCTIONS = """You are a practical personal stylist. Put together outfits using ONLY items from the user's closet list (JSON, one item per line). Refer to items by their id.
 Rules for every outfit:
 - Either one dress, or at least one top plus one bottom. Two tops are fine when they layer (e.g. shirt under a sweater).
+- "kind" is the type of each piece (shirt, sweater, formal shoes...).
+- Category "suit" is tailoring (blazers, suit jackets) worn over a top; a coat can go over it. At most one per outfit.
+- Suits: items with "suit_partner" belong together. Worn together they are formal. The jacket alone is one step less formal (fine for smart casual with chinos or jeans). An item with "only_with_partner" must be worn with its partner.
+- occasion: what the outfit is for: 1 casual (everyday), 2 smart casual (work), 3 formal (elegant).
+- The user's ground rules are strict: never break them.
+- Learn from the user's past outfits: repeat what they rated highly, avoid what they rated low, and follow their notes (on items and outfits).
 - Add shoes when the closet has any. Outerwear and one accessory are optional.
 - Keep formality consistent (1 casual, 2 smart casual, 3 formal) and warmth roughly consistent (1 very light .. 5 very warm).
 - Colors: neutrals go with anything; prefer at most one bold accent color per outfit.
@@ -264,7 +276,7 @@ Rules for every outfit:
 - name: 2-4 words, e.g. "Easy Friday", "Rainy commute".
 - reason: one short sentence (max 20 words) on why it works."""
 
-ITEM_DETAIL_KEYS = ("brand", "color2", "pattern", "material", "fit", "tags")
+ITEM_DETAIL_KEYS = ("kind", "brand", "color2", "pattern", "material", "fit", "tags")
 
 
 def _item_line(it: dict) -> str:
@@ -275,8 +287,12 @@ def _item_line(it: dict) -> str:
     for k in ITEM_DETAIL_KEYS:
         if it.get(k):
             slim[k] = it[k]
+    if it.get("match_id"):
+        slim["suit_partner"] = it["match_id"]
+        if it.get("pair_only"):
+            slim["only_with_partner"] = True
     if it.get("notes"):
-        slim["notes"] = it["notes"][:120]
+        slim["notes"] = it["notes"][:400]
     if it.get("favorite"):
         slim["favorite"] = True
     slim["times_worn"] = it.get("times_worn") or 0
@@ -288,9 +304,30 @@ def _item_line(it: dict) -> str:
 
 
 def build_outfits(items: list, count: int, anchor: dict = None, note: str = "",
-                  existing: list = None, style: str = "") -> list:
-    """Ask the AI for outfits. Returns raw [{name, item_ids, reason}]; the caller validates."""
+                  existing: list = None, style: str = "", rules: list = None, history: list = None,
+                  temp: float = None) -> list:
+    """Ask the AI for outfits. Returns raw [{name, item_ids, occasion, reason}]; the caller validates."""
     parts = ["Closet:", *(_item_line(i) for i in items)]
+    known = {i["id"] for i in items}
+    past = []
+    for h in history or []:
+        ids = [i for i in h["items"] if i in known]
+        if not ids:
+            continue
+        entry = {"item_ids": ids}
+        if h.get("rating"):
+            entry["rating"] = h["rating"]
+        if h.get("notes"):
+            entry["note"] = h["notes"][:300]
+        past.append(json.dumps(entry, ensure_ascii=False))
+    if past:
+        parts.append("\nPast outfits with the user's rating (1-5 stars) and notes:")
+        parts.extend(past[:40])
+    if rules:
+        parts.append("\nThe user's ground rules (strict):")
+        parts.extend(f"- {rulebook.describe(r)}" for r in rules)
+    if temp is not None:
+        parts.append(f"\nToday it feels like {round(temp)}°C.")
     if existing:
         parts.append("\nExisting saved outfits (item ids), don't repeat these:")
         parts.extend(json.dumps(ids) for ids in existing[:30])

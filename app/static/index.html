@@ -126,8 +126,23 @@
           <label class="field">Category
             <select name="category" required></select>
           </label>
+          <label class="field">Type
+            <select name="kind"></select>
+          </label>
+        </div>
+        <div class="suit-box" id="suit-box" hidden>
+          <label class="field"><span id="match-label">Matching trousers</span>
+            <select name="match_id"></select>
+          </label>
+          <label class="check" id="pair-only-check" hidden><input type="checkbox" name="pair_only"> Only wear them together</label>
+          <div class="muted small" id="suit-hint"></div>
+        </div>
+        <div class="row2">
           <label class="field">Main color
             <input name="color" list="color-list" maxlength="40" placeholder="e.g. navy">
+          </label>
+          <label class="field">Second color
+            <input name="color2" list="color-list" maxlength="40" placeholder="optional">
           </label>
         </div>
         <label class="field"><span>Warmth: <strong id="warmth-label">Medium</strong></span>
@@ -147,19 +162,6 @@
           </div>
         </label>
         <div class="row2">
-          <label class="field">Material
-            <input name="material" list="material-list" maxlength="60" placeholder="e.g. cotton">
-          </label>
-          <label class="field">Fit
-            <select name="fit">
-              <option value="">–</option>
-              <option value="slim">Slim</option>
-              <option value="regular">Regular</option>
-              <option value="relaxed">Relaxed / oversized</option>
-            </select>
-          </label>
-        </div>
-        <div class="row2">
           <label class="field">Pattern
             <select name="pattern">
               <option value="">–</option>
@@ -171,10 +173,18 @@
               <option value="other">Other</option>
             </select>
           </label>
-          <label class="field">Second color
-            <input name="color2" list="color-list" maxlength="40" placeholder="optional">
+          <label class="field">Fit
+            <select name="fit">
+              <option value="">–</option>
+              <option value="slim">Slim</option>
+              <option value="regular">Regular</option>
+              <option value="relaxed">Relaxed / oversized</option>
+            </select>
           </label>
         </div>
+        <label class="field">Material
+          <input name="material" list="material-list" maxlength="60" placeholder="e.g. cotton">
+        </label>
         <label class="field"><span>Tags <span class="small">(comma separated; “waterproof” helps on rainy days)</span></span>
           <input name="tags" maxlength="200" placeholder="work, summer, waterproof">
         </label>
@@ -242,13 +252,16 @@
   <dialog id="log-dialog">
     <form id="log-form" method="dialog">
       <div class="dlg-head">
-        <h2>Log an outfit</h2>
+        <h2 id="log-title">Log an outfit</h2>
         <button type="button" class="icon-btn" data-close aria-label="Close">✕</button>
       </div>
       <div class="dlg-body">
+        <label class="field" id="log-name-field" hidden>Name
+          <input name="outfit_name" maxlength="80" placeholder="e.g. Cold office">
+        </label>
         <div class="row2">
-          <label class="field">Date
-            <input type="date" name="worn_on" required>
+          <label class="field" id="log-date-field">Date
+            <input type="date" name="worn_on">
           </label>
           <label class="field">Occasion
             <select name="occasion">
@@ -258,15 +271,18 @@
             </select>
           </label>
         </div>
-        <div class="field">How did it feel?
+        <div class="field" id="log-stars-field">How did it feel?
           <div class="stars" id="log-stars"></div>
         </div>
+        <label class="field"><span>Notes <span class="small">(Today shows them when it suggests this outfit again)</span></span>
+          <textarea name="notes" rows="2" maxlength="1000" placeholder="e.g. too warm for the office, great for meetings"></textarea>
+        </label>
         <p class="muted small" id="pick-count">Tap the pieces you wore.</p>
         <div id="picker" class="picker"></div>
       </div>
       <div class="dlg-foot">
         <span></span>
-        <button type="submit" class="btn primary">Save outfit</button>
+        <button type="submit" class="btn primary" id="log-save-btn">Save outfit</button>
       </div>
     </form>
   </dialog>
@@ -296,6 +312,55 @@
         <label class="field"><span>Add a jacket when it feels colder than (<span id="thresh-unit">°C</span>)</span>
           <input type="number" name="outerwear_below" step="1">
         </label>
+        <h3 class="settings-head">Outfit rules</h3>
+        <div class="muted small">Today's suggestions and AI outfits always follow these.</div>
+        <div id="rules-list" class="rules-list"></div>
+        <div id="rules-untyped" class="small import-status error"></div>
+        <details class="rule-add" id="rule-add">
+          <summary class="btn">Add a rule</summary>
+          <div class="rule-builder">
+            <div class="row2">
+              <label class="field">Rule
+                <select id="rule-type">
+                  <option value="only">Only allow…</option>
+                  <option value="never">Never wear…</option>
+                  <option value="under">Needs something under it</option>
+                </select>
+              </label>
+              <label class="field">For
+                <select id="rule-occasion">
+                  <option value="0">Any occasion</option>
+                  <option value="1">Casual</option>
+                  <option value="2" selected>Work (smart casual)</option>
+                  <option value="3">Formal</option>
+                </select>
+              </label>
+            </div>
+            <label class="field" id="rule-cat-field">Category
+              <select id="rule-category"></select>
+            </label>
+            <div class="field">Types <span class="small" id="rule-kinds-hint">(tap all that are allowed)</span>
+              <div class="kind-chips" id="rule-kinds"></div>
+            </div>
+            <div class="row2">
+              <label class="field">Weather
+                <select id="rule-temp-mode">
+                  <option value="">Any temperature</option>
+                  <option value="below">Colder than</option>
+                  <option value="above">Warmer than</option>
+                </select>
+              </label>
+              <label class="field" id="rule-temp-field" hidden><span>Feels like (<span class="rule-unit">°C</span>)</span>
+                <input type="number" id="rule-temp" step="1" value="10">
+              </label>
+            </div>
+            <div class="small muted" id="rule-preview"></div>
+            <div class="inline-status">
+              <button type="button" class="btn primary" id="rule-add-btn">Add rule</button>
+              <span class="small import-status" id="rule-status"></span>
+            </div>
+          </div>
+        </details>
         <div id="photos-section" hidden>
           <h3 class="settings-head">Photos</h3>
           <div class="inline-status">

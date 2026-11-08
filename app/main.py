@@ -1,6 +1,7 @@
 """Closet tracker + outfit recommender: API and static web UI."""
 import base64
 import io
+import json
 import mimetypes
 import os
 import secrets
@@ -16,7 +17,8 @@ from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps
 from pydantic import BaseModel
 
-from . import ai, cutout, pages, recommender, weather
+from . import ai, cutout, kinds, pages, recommender, weather
+from . import rules as rulebook
 
 mimetypes.add_type("image/webp", ".webp")  # cut-out photos; not in every system's type list
 
@@ -75,7 +77,7 @@ CREATE TABLE IF NOT EXISTS settings (
 """
 
 DEFAULT_SETTINGS = {"unit": "C", "location_name": "", "lat": "", "lon": "", "outerwear_below": "16",
-                    "ai_prompt": "", "openai_key": "", "ai_model": ""}
+                    "ai_prompt": "", "openai_key": "", "ai_model": "", "rules": "[]"}
 
 # Item columns added after the first release. init_db adds any that an older database is missing.
 EXTRA_ITEM_COLUMNS = {
@@ -84,7 +86,13 @@ EXTRA_ITEM_COLUMNS = {
     "material": "TEXT NOT NULL DEFAULT ''",
     "fit": "TEXT NOT NULL DEFAULT ''",
     "photo_original": "TEXT",   # set when the background was removed; lets you undo it
+    "kind": "TEXT NOT NULL DEFAULT ''",      # type within the category: shirt, sweater, formal shoes...
+    "match_id": "INTEGER",                   # the other half of a suit (jacket <-> trousers)
+    "pair_only": "INTEGER NOT NULL DEFAULT 0",  # only wear together with match_id
 }
+EXTRA_SAVED_COLUMNS = {"occasion": "INTEGER"}
+# Categories that can be linked as a suit.
+PAIRS = {"suit": "bottom", "bottom": "suit"}
 
 ITEM_SELECT = """
 SELECT i.*, COUNT(o.id) AS times_worn, MAX(o.worn_on) AS last_worn, AVG(o.rating) AS avg_rating
@@ -115,7 +123,23 @@ def init_db():
         for col, decl in EXTRA_ITEM_COLUMNS.items():
             if col not in have:
                 conn.execute(f"ALTER TABLE items ADD COLUMN {col} {decl}")
+        if "kind" not in have:
+            upgrade_kinds(conn)
+        have = {r["name"] for r in conn.execute("PRAGMA table_info(saved_outfits)")}
+        for col, decl in EXTRA_SAVED_COLUMNS.items():
+            if col not in have:
+                conn.execute(f"ALTER TABLE saved_outfits ADD COLUMN {col} {decl}")
         load_ai_config(conn)
+
+
+def upgrade_kinds(conn):
+    """First start with item types: move blazers to the new suit category and guess every item's type."""
+    for r in conn.execute("SELECT id, name, category, tags FROM items").fetchall():
+        cat = r["category"]
+        if cat in ("outerwear", "top") and kinds.is_tailoring(r["name"]):
+            cat = "suit"
+        kind = kinds.guess_kind(f"{r['name']} {r['tags']}", cat)
+        conn.execute("UPDATE items SET category = ?, kind = ? WHERE id = ?", (cat, kind, r["id"]))
 
 
 def raw_settings(conn) -> dict:
@@ -171,6 +195,7 @@ def item_dict(row) -> dict:
     for k in ("favorite", "in_laundry", "archived"):
         d[k] = bool(d[k])
     d["has_original"] = bool(d.pop("photo_original", None))
+    d["pair_only"] = bool(d.get("pair_only"))
     if d.get("avg_rating") is not None:
         d["avg_rating"] = round(d["avg_rating"], 2)
     return d
@@ -204,7 +229,15 @@ def get_settings(conn) -> dict:
         "ai_models": ai.MODELS,
         "ai_key_source": ai.key_source(),
         "ai_key_hint": f"…{key[-4:]}" if len(key) >= 8 else ("set" if key else ""),
+        "rules": read_rules(s),
     }
+
+
+def read_rules(raw: dict) -> list:
+    try:
+        return rulebook.normalize(json.loads(raw.get("rules") or "[]"))
+    except ValueError:
+        return []
 
 
 def save_photo(upload: UploadFile) -> str:
@@ -254,6 +287,9 @@ def canonical_brand(conn, brand: str) -> str:
 def item_form(
     name: str = Form(...),
     category: str = Form(...),
+    kind: str = Form(""),
+    match_id: str = Form(""),
+    pair_only: bool = Form(False),
     color: str = Form(""),
     color2: str = Form(""),
     pattern: str = Form(""),
@@ -269,11 +305,19 @@ def item_form(
     name = name.strip()
     if not name:
         raise HTTPException(400, "Name is required")
-    if category not in recommender.CATEGORIES:
+    if category not in kinds.CATEGORIES:
         raise HTTPException(400, "Unknown category")
+    kind = kinds.clean_kind(kind, category) or kinds.guess_kind(f"{name} {tags}", category)
+    try:
+        match = int(match_id) if match_id.strip() and category in PAIRS else None
+    except ValueError:
+        match = None
     return {
         "name": name[:120],
         "category": category,
+        "kind": kind,
+        "match_id": match,
+        "pair_only": int(pair_only and match is not None),
         "color": color.strip()[:40],
         "color2": color2.strip()[:40],
         "pattern": pattern if pattern in ai.PATTERNS else "",
@@ -292,6 +336,22 @@ def item_form(
 def list_items(include_archived: bool = False):
     with db() as conn:
         return fetch_items(conn, "" if include_archived else "i.archived = 0")
+
+
+def link_pair(conn, item_id: int, match_id: Optional[int]):
+    """Keep suit links two-way: A <-> B. Clears links that no longer hold."""
+    row = conn.execute("SELECT category, match_id FROM items WHERE id = ?", (item_id,)).fetchone()
+    if match_id is not None:
+        mate = conn.execute("SELECT category FROM items WHERE id = ?", (match_id,)).fetchone()
+        if not mate or match_id == item_id or PAIRS.get(row["category"]) != mate["category"]:
+            raise HTTPException(400, "A suit jacket can only be matched with a bottom, and the other way round.")
+    # drop old links that point at either piece (but keep the partner's own settings)
+    conn.execute("UPDATE items SET match_id = NULL, pair_only = 0 WHERE match_id = ? AND id IS NOT ?",
+                 (item_id, match_id))
+    if match_id is not None:
+        conn.execute("UPDATE items SET match_id = NULL, pair_only = 0 WHERE match_id = ? AND id <> ?", (match_id, item_id))
+        conn.execute("UPDATE items SET match_id = ? WHERE id = ?", (item_id, match_id))
+    conn.execute("UPDATE items SET match_id = ? WHERE id = ?", (match_id, item_id))
 
 
 def apply_cutout(fields: dict) -> Optional[str]:
@@ -317,6 +377,8 @@ def create_item(fields: dict = Depends(item_form), photo: Optional[UploadFile] =
         cols = ", ".join(fields)
         marks = ", ".join("?" for _ in fields)
         cur = conn.execute(f"INSERT INTO items ({cols}) VALUES ({marks})", tuple(fields.values()))
+        if fields["match_id"] is not None:
+            link_pair(conn, cur.lastrowid, fields["match_id"])
         item = get_item(conn, cur.lastrowid)
     item["cutout_error"] = warning
     return item
@@ -348,6 +410,7 @@ def update_item(
         fields["brand"] = canonical_brand(conn, fields["brand"])
         sets = ", ".join(f"{k} = ?" for k in fields)
         conn.execute(f"UPDATE items SET {sets} WHERE id = ?", (*fields.values(), item_id))
+        link_pair(conn, item_id, fields["match_id"])
         item = get_item(conn, item_id)
     item["cutout_error"] = warning
     return item
@@ -415,6 +478,7 @@ def delete_item(item_id: int):
         get_item(conn, item_id)
         old_files = photo_files(conn, item_id)
         conn.execute("DELETE FROM items WHERE id = ?", (item_id,))
+        conn.execute("UPDATE items SET match_id = NULL, pair_only = 0 WHERE match_id = ?", (item_id,))
         conn.execute("DELETE FROM outfits WHERE id NOT IN (SELECT outfit_id FROM outfit_items)")
         conn.execute("DELETE FROM saved_outfits WHERE id NOT IN (SELECT saved_id FROM saved_outfit_items)")
     for f in old_files:
@@ -448,6 +512,7 @@ def recommend(
     with db() as conn:
         settings = get_settings(conn)
         items = fetch_items(conn, "i.archived = 0")
+        history = outfit_history(conn)
 
     day_wx, wx_error = None, None
     if settings["lat"] is not None and settings["lon"] is not None:
@@ -465,6 +530,7 @@ def recommend(
     result = recommender.recommend(
         items, occasion=occasion, temp=temp, rainy=rain, on=target,
         seed=f"{target}-{occasion}-{seed}", outerwear_below=settings["outerwear_below"],
+        rules=settings["rules"], history=history,
     )
     result["weather"] = day_wx
     result["weather_error"] = wx_error
@@ -479,6 +545,34 @@ class OutfitIn(BaseModel):
     occasion: Optional[int] = None
     rating: Optional[int] = None
     notes: str = ""
+
+
+def outfit_history(conn, limit=300) -> list:
+    """Logged outfits (newest first), then saved ones: what you thought of each combination."""
+    out = []
+    for o in fetch_outfits(conn, limit):
+        if o["rating"] or o["notes"]:
+            out.append({"key": recommender.history_key(o["items"]), "rating": o["rating"], "notes": o["notes"],
+                        "items": [i["id"] for i in o["items"]], "worn_on": o["worn_on"]})
+    for s in fetch_saved(conn):
+        if s["notes"]:
+            out.append({"key": recommender.history_key(s["items"]), "rating": None, "notes": s["notes"],
+                        "items": [i["id"] for i in s["items"]], "name": s["name"]})
+    return out
+
+
+def check_items(conn, ids):
+    if not ids:
+        raise HTTPException(400, "Pick at least one item")
+    marks = ",".join("?" for _ in ids)
+    found = conn.execute(f"SELECT COUNT(*) FROM items WHERE id IN ({marks})", ids).fetchone()[0]
+    if found != len(ids):
+        raise HTTPException(400, "Unknown item in outfit")
+
+
+def check_occasion(o):
+    if o is not None and o not in (1, 2, 3):
+        raise HTTPException(400, "Occasion must be 1-3")
 
 
 class OutfitPatch(BaseModel):
@@ -499,12 +593,12 @@ def fetch_outfits(conn, limit=200):
     ids = [o["id"] for o in outfits]
     marks = ",".join("?" for _ in ids)
     rows = conn.execute(
-        f"""SELECT oi.outfit_id, i.id, i.name, i.category, i.color, i.photo
+        f"""SELECT oi.outfit_id, i.id, i.name, i.category, i.kind, i.color, i.photo
             FROM outfit_items oi JOIN items i ON i.id = oi.item_id
             WHERE oi.outfit_id IN ({marks})""", ids).fetchall()
     by_outfit = {}
     for r in rows:
-        it = {"id": r["id"], "name": r["name"], "category": r["category"], "color": r["color"],
+        it = {"id": r["id"], "name": r["name"], "category": r["category"], "kind": r["kind"], "color": r["color"],
               "photo_url": f"/photos/{r['photo']}" if r["photo"] else None}
         by_outfit.setdefault(r["outfit_id"], []).append(it)
     for o in outfits:
@@ -525,6 +619,7 @@ def log_outfit(body: OutfitIn):
     if not ids:
         raise HTTPException(400, "Pick at least one item")
     _check_rating(body.rating)
+    check_occasion(body.occasion)
     try:
         worn_on = date.fromisoformat(body.worn_on) if body.worn_on else date.today()
     except ValueError:
@@ -552,6 +647,27 @@ def patch_outfit(outfit_id: int, body: OutfitPatch):
             conn.execute("UPDATE outfits SET rating = ? WHERE id = ?", (body.rating, outfit_id))
         if body.notes is not None:
             conn.execute("UPDATE outfits SET notes = ? WHERE id = ?", (body.notes.strip()[:1000], outfit_id))
+    return {"ok": True}
+
+
+@app.put("/api/outfits/{outfit_id}")
+def update_outfit(outfit_id: int, body: OutfitIn):
+    ids = sorted(set(body.item_ids))
+    _check_rating(body.rating)
+    check_occasion(body.occasion)
+    try:
+        worn_on = date.fromisoformat(body.worn_on) if body.worn_on else None
+    except ValueError:
+        raise HTTPException(400, "Bad date")
+    with db() as conn:
+        if not conn.execute("SELECT 1 FROM outfits WHERE id = ?", (outfit_id,)).fetchone():
+            raise HTTPException(404, "Outfit not found")
+        check_items(conn, ids)
+        conn.execute("UPDATE outfits SET worn_on = COALESCE(?, worn_on), occasion = ?, rating = ?, notes = ? WHERE id = ?",
+                     (worn_on.isoformat() if worn_on else None, body.occasion, body.rating,
+                      body.notes.strip()[:1000], outfit_id))
+        conn.execute("DELETE FROM outfit_items WHERE outfit_id = ?", (outfit_id,))
+        conn.executemany("INSERT INTO outfit_items (outfit_id, item_id) VALUES (?, ?)", [(outfit_id, i) for i in ids])
     return {"ok": True}
 
 
@@ -586,6 +702,7 @@ class SavedIn(BaseModel):
     item_ids: List[int]
     name: str = ""
     notes: str = ""
+    occasion: Optional[int] = None
 
 
 @app.get("/api/saved")
@@ -597,18 +714,30 @@ def list_saved():
 @app.post("/api/saved")
 def save_outfit(body: SavedIn):
     ids = sorted(set(body.item_ids))
-    if not ids:
-        raise HTTPException(400, "Pick at least one item")
+    check_occasion(body.occasion)
     with db() as conn:
-        marks = ",".join("?" for _ in ids)
-        found = conn.execute(f"SELECT COUNT(*) FROM items WHERE id IN ({marks})", ids).fetchone()[0]
-        if found != len(ids):
-            raise HTTPException(400, "Unknown item in outfit")
-        cur = conn.execute("INSERT INTO saved_outfits (name, notes) VALUES (?, ?)",
-                           (body.name.strip()[:80], body.notes.strip()[:500]))
+        check_items(conn, ids)
+        cur = conn.execute("INSERT INTO saved_outfits (name, notes, occasion) VALUES (?, ?, ?)",
+                           (body.name.strip()[:80], body.notes.strip()[:1000], body.occasion))
         conn.executemany("INSERT INTO saved_outfit_items (saved_id, item_id) VALUES (?, ?)",
                          [(cur.lastrowid, i) for i in ids])
         return {"id": cur.lastrowid}
+
+
+@app.put("/api/saved/{saved_id}")
+def update_saved(saved_id: int, body: SavedIn):
+    ids = sorted(set(body.item_ids))
+    check_occasion(body.occasion)
+    with db() as conn:
+        if not conn.execute("SELECT 1 FROM saved_outfits WHERE id = ?", (saved_id,)).fetchone():
+            raise HTTPException(404, "Outfit not found")
+        check_items(conn, ids)
+        conn.execute("UPDATE saved_outfits SET name = ?, notes = ?, occasion = ? WHERE id = ?",
+                     (body.name.strip()[:80], body.notes.strip()[:1000], body.occasion, saved_id))
+        conn.execute("DELETE FROM saved_outfit_items WHERE saved_id = ?", (saved_id,))
+        conn.executemany("INSERT INTO saved_outfit_items (saved_id, item_id) VALUES (?, ?)",
+                         [(saved_id, i) for i in ids])
+    return {"ok": True}
 
 
 @app.delete("/api/saved/{saved_id}")
@@ -625,7 +754,8 @@ def config():
     with db() as conn:
         saved = conn.execute("SELECT COUNT(*) FROM saved_outfits").fetchone()[0]
     return {"ai_enabled": ai.enabled(), "ai_model": ai.model(), "saved_count": saved,
-            "cutout_enabled": cutout.available()}
+            "cutout_enabled": cutout.available(), "kinds": kinds.KINDS,
+            "layer_kinds": sorted(kinds.LAYER_KINDS), "base_kinds": sorted(kinds.BASE_KINDS)}
 
 
 class AITestIn(BaseModel):
@@ -703,11 +833,12 @@ def ai_describe(photo: UploadFile = File(...)):
 
 
 # How many pieces of each category one outfit may hold (two tops = layering).
-OUTFIT_LIMITS = {"top": 2, "bottom": 1, "dress": 1, "outerwear": 1, "shoes": 1, "accessory": 2}
+OUTFIT_LIMITS = {"top": 2, "bottom": 1, "dress": 1, "suit": 1, "outerwear": 1, "shoes": 1, "accessory": 2}
 
 
-def check_outfit(ids, allowed: dict, anchor_id=None):
-    """Keep only known, clean items; return the item list or None if it isn't a full outfit."""
+def check_outfit(ids, allowed: dict, anchor_id=None, rules=None):
+    """Keep only known, clean items; return the item list or None if it isn't a full outfit
+    or breaks a ground rule or a suit that must be worn together."""
     picked, counts = [], {}
     for i in dict.fromkeys(ids):
         it = allowed.get(i)
@@ -720,9 +851,23 @@ def check_outfit(ids, allowed: dict, anchor_id=None):
         picked.append(it)
     if not (counts.get("dress") or (counts.get("top") and counts.get("bottom"))):
         return None
-    if anchor_id is not None and anchor_id not in {i["id"] for i in picked}:
+    ids_in = {i["id"] for i in picked}
+    if anchor_id is not None and anchor_id not in ids_in:
+        return None
+    if any(i.get("pair_only") and i.get("match_id") not in ids_in for i in picked):
+        return None
+    if rules and rulebook.broken(picked, rules):
         return None
     return ordered(picked)
+
+
+def today_temp(settings) -> Optional[float]:
+    if settings["lat"] is None or settings["lon"] is None:
+        return None
+    try:
+        return weather.forecast(settings["lat"], settings["lon"])["days"][0]["effective"]
+    except Exception:
+        return None
 
 
 class AIOutfitsIn(BaseModel):
@@ -736,6 +881,7 @@ def ai_outfits(body: AIOutfitsIn):
     with db() as conn:
         settings = get_settings(conn)
         items = fetch_items(conn, "i.archived = 0")
+        history = outfit_history(conn, 60)
         existing = [
             [r["item_id"] for r in conn.execute(
                 "SELECT item_id FROM saved_outfit_items WHERE saved_id = ? ORDER BY item_id", (s["id"],))]
@@ -752,16 +898,19 @@ def ai_outfits(body: AIOutfitsIn):
         raise HTTPException(400, "Add some clean tops and bottoms (or dresses) first.")
 
     count = 3 if anchor else 5
+    temp = today_temp(settings)
     try:
         raw = ai.build_outfits(list(allowed.values()), count, anchor, body.note, existing,
-                              settings["ai_prompt"])
+                              settings["ai_prompt"], rules=settings["rules"], history=history, temp=temp)
     except ai.AIError as e:
         raise HTTPException(502, str(e))
 
     seen = {frozenset(ids) for ids in existing}
     outfits = []
     for o in raw:
-        its = check_outfit(o.get("item_ids") or [], allowed, anchor["id"] if anchor else None)
+        occasion = o.get("occasion") if o.get("occasion") in (1, 2, 3) else 2
+        its = check_outfit(o.get("item_ids") or [], allowed, anchor["id"] if anchor else None,
+                           rulebook.active(settings["rules"], occasion, temp))
         if not its:
             continue
         key = frozenset(i["id"] for i in its)
@@ -770,11 +919,11 @@ def ai_outfits(body: AIOutfitsIn):
         seen.add(key)
         outfits.append({"name": str(o.get("name") or "").strip()[:80],
                         "reason": str(o.get("reason") or "").strip()[:300],
-                        "items": its})
+                        "occasion": occasion, "items": its})
         if len(outfits) >= count:
             break
     if not outfits:
-        raise HTTPException(502, "The AI's outfits didn't match your closet. Try again.")
+        raise HTTPException(502, "The AI's outfits didn't match your closet or your rules. Try again.")
     return {"outfits": outfits}
 
 
@@ -789,6 +938,7 @@ class SettingsIn(BaseModel):
     ai_prompt: Optional[str] = None
     openai_key: Optional[str] = None    # "" removes the saved key
     ai_model: Optional[str] = None      # "" = default
+    rules: Optional[list] = None
 
 
 @app.get("/api/settings")
@@ -805,6 +955,8 @@ def write_settings(body: SettingsIn):
     for k, limit in (("ai_prompt", 1000), ("openai_key", 300), ("ai_model", 80)):
         if data.get(k) is not None:
             data[k] = data[k].strip()[:limit]
+    if "rules" in data:
+        data["rules"] = json.dumps(rulebook.normalize(data["rules"]))
     with db() as conn:
         for k, v in data.items():
             conn.execute("INSERT INTO settings (key, value) VALUES (?, ?) "

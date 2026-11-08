@@ -8,7 +8,7 @@ import urllib.parse
 import urllib.request
 from html.parser import HTMLParser
 
-from .recommender import CATEGORIES
+from .kinds import CATEGORIES, guess_kind
 
 MAX_PAGE = 3 * 1024 * 1024
 MAX_IMAGE = 15 * 1024 * 1024
@@ -155,7 +155,8 @@ def _image(v) -> str:
 # Checked in order; whole words only (so "bootcut jeans" isn't shoes, "short sleeve" isn't shorts).
 CATEGORY_WORDS = [
     ("dress", r"\b(dress|dresses|jumpsuits?|playsuits?|rompers?|gowns?)\b"),
-    ("outerwear", r"\b(jackets?|coats?|topcoats?|overcoats?|raincoats?|blazers?|parkas?|anoraks?|gilets?|trench|bombers?|puffers?|windbreakers?|overshirts?|shackets?)\b"),
+    ("suit", r"\b(blazers?|suit jackets?|sport ?coats?|waistcoats?|sakkos?)\b"),
+    ("outerwear", r"\b(jackets?|coats?|topcoats?|overcoats?|raincoats?|parkas?|anoraks?|gilets?|trench|bombers?|puffers?|windbreakers?|overshirts?|shackets?)\b"),
     ("shoes", r"\b(shoes?|sneakers?|trainers?|boots?|loafers?|sandals?|heels?|pumps|mules|derbys?|derbies|espadrilles?|slippers?|clogs?|brogues?)\b"),
     ("bottom", r"\b(jeans|trousers?|pants|chinos?|shorts|skirts?|leggings|joggers?|cargos?|slacks)\b"),
     ("top", r"\b(shirts?|t-shirts?|tees?|tops?|sweaters?|jumpers?|hoodies?|sweatshirts?|cardigans?|polos?|blouses?|tanks?|knits?|pullovers?|turtlenecks?|vests?)\b"),
@@ -261,4 +262,8 @@ def guess_defaults(basic: dict) -> dict:
     out = {k: v for k, v in basic.items() if v}
     if out.get("category") not in CATEGORIES:
         out.pop("category", None)  # unknown: the form keeps what's selected
+    else:
+        kind = guess_kind(out.get("name", ""), out["category"])
+        if kind:
+            out["kind"] = kind
     return out

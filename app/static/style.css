@@ -348,3 +348,18 @@ dialog form { display: flex; flex-direction: column; max-height: calc(100dvh - 2
 }
 .bulk-done { width: 32px; text-align: center; color: var(--accent); font-weight: 700; font-size: 18px; }
 .empty .inline { flex-wrap: wrap; justify-content: center; }
+
+/* suits, outfit notes, rules */
+.suit-box { display: flex; flex-direction: column; gap: 8px; padding: 12px; border-radius: 12px; background: var(--accent-soft); }
+.suit-box .field { color: var(--text); }
+.item-kind { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hist-note, .outfit-note { font-size: 13px; font-style: italic; color: var(--text); background: var(--surface-2); padding: 6px 10px; border-radius: 10px; }
+.rules-list { display: flex; flex-direction: column; gap: 6px; }
+.rule-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 6px 8px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); font-size: 14px; }
+.rule-row .icon-btn { width: 32px; height: 32px; font-size: 14px; color: var(--muted); flex: none; }
+.rule-add > summary { list-style: none; display: inline-block; }
+.rule-add > summary::-webkit-details-marker { display: none; }
+.rule-add[open] > summary { display: none; }
+.rule-builder { display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 14px; }
+.kind-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.kind-chips .chip { font-size: 13px; }

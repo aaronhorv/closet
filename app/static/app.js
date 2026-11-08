@@ -240,8 +240,10 @@ function renderCloset() {
     grid.innerHTML = `<div class="card empty" style="grid-column:1/-1">
       <div><strong>Your closet is empty</strong></div>
       <div>Add a few tops, bottoms and shoes and you'll get outfit ideas on the Today tab.</div>
-      <button class="btn primary" id="empty-add">Add your first item</button></div>`;
+      <div class="inline"><button class="btn primary" id="empty-add">Add your first item</button>
+      <button class="btn" id="empty-bulk">Add many at once</button></div></div>`;
     $('#empty-add').onclick = () => openItem();
+    $('#empty-bulk').onclick = () => openBulk();
     return;
   }
   if (!list.length) {
@@ -704,6 +706,378 @@ async function aiFill() {
   }
 }
 
+// ---------- photos from files, drops and paste ----------
+const BULK_MAX = 50;
+const isImage = (f) => f && (f.type.startsWith('image/') || /\.(jpe?g|png|webp|gif|heic|heif|avif)$/i.test(f.name || ''));
+const imageFiles = (list) => [...(list || [])].filter(isImage);
+const hasFiles = (e) => [...(e.dataTransfer?.types || [])].includes('Files');
+
+// Shrink big phone photos before upload (the server stores 1200 px anyway).
+async function shrinkPhoto(file, max = 1600) {
+  try {
+    const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
+    const scale = Math.min(1, max / Math.max(bmp.width, bmp.height));
+    if (scale === 1 && file.size < 1.5 * 1024 * 1024) { bmp.close(); return file; }
+    const c = document.createElement('canvas');
+    c.width = Math.round(bmp.width * scale);
+    c.height = Math.round(bmp.height * scale);
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#fff'; // transparent PNGs become JPEG
+    ctx.fillRect(0, 0, c.width, c.height);
+    ctx.drawImage(bmp, 0, 0, c.width, c.height);
+    bmp.close();
+    const blob = await new Promise((ok) => c.toBlob(ok, 'image/jpeg', 0.9));
+    return blob ? new File([blob], 'photo.jpg', { type: 'image/jpeg' }) : file;
+  } catch {
+    return file; // the browser can't read it (e.g. HEIC); let the server try
+  }
+}
+
+function usePhoto(file) {
+  pendingPhoto = file;
+  removePhoto = false;
+  $('#cutout-toggle').checked = true;
+  setPreview(URL.createObjectURL(file));
+  updateAIButtons();
+}
+
+// Highlight an element while files are dragged over it; call onDrop with the image files.
+function dropTarget(el, onDrop) {
+  let depth = 0;
+  el.addEventListener('dragenter', (e) => { if (!hasFiles(e)) return; e.preventDefault(); depth += 1; el.classList.add('drop'); });
+  el.addEventListener('dragover', (e) => { if (!hasFiles(e)) return; e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
+  el.addEventListener('dragleave', () => { depth = Math.max(0, depth - 1); if (!depth) el.classList.remove('drop'); });
+  el.addEventListener('drop', (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    depth = 0;
+    el.classList.remove('drop');
+    const files = imageFiles(e.dataTransfer.files);
+    if (files.length) onDrop(files); else toast('That isn’t a photo.');
+  });
+}
+
+// ---------- ADD MANY ----------
+const bulk = { rows: [], seq: 0, filling: false, saving: false, run: 0, saveTotal: 0, saveDone: 0 };
+
+function defaultName(file, n) {
+  const base = (file.name || '').replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim();
+  // camera names like IMG_1234 or PXL_2026… say nothing about the item
+  if (!base || /^(img|dsc|dscn|pxl|photo|image|screenshot|whatsapp|signal|mvimg)\b/i.test(base) || /^\d/.test(base)) return `Item ${n}`;
+  return (base[0].toUpperCase() + base.slice(1)).slice(0, 120);
+}
+
+function openBulk(files = []) {
+  if (!$('#bulk-dialog').open) {
+    resetBulk();
+    $('#bulk-cutout').checked = true;
+    $('#bulk-dialog').showModal();
+  }
+  if (files.length) addBulkFiles(files);
+}
+
+function resetBulk() {
+  bulk.rows.forEach((r) => { if (r.url.startsWith('blob:')) URL.revokeObjectURL(r.url); });
+  bulk.rows = [];
+  bulk.seq = 0;
+  bulk.filling = false;
+  bulk.saving = false;
+  bulk.run += 1; // stops loops still running from before
+  $('#bulk-input').value = '';
+  renderBulk();
+}
+
+function bulkUnsaved() { return bulk.rows.filter((r) => r.status !== 'saved'); }
+
+function closeBulk() {
+  const left = bulkUnsaved().length;
+  if (left && !confirm(`Close without saving ${left} photo${left > 1 ? 's' : ''}?`)) return;
+  $('#bulk-dialog').close();
+  resetBulk();
+}
+
+async function addBulkFiles(files) {
+  if (bulk.saving) { toast('Wait until saving is done.'); return; }
+  const images = imageFiles(files);
+  const take = images.slice(0, Math.max(0, BULK_MAX - bulk.rows.length));
+  if (images.length > take.length) toast(`Up to ${BULK_MAX} photos at a time. Save these first, then add more.`);
+  if (!take.length) return;
+  const run = bulk.run;
+  const cat = CAT_LABEL[state.filter] ? state.filter : 'top';
+  const added = take.map((file) => {
+    bulk.seq += 1;
+    return {
+      id: bulk.seq, file, url: URL.createObjectURL(file), name: defaultName(file, bulk.seq), category: cat,
+      fields: {}, status: state.ai ? 'queued' : 'ready', note: state.ai ? 'Waiting for AI…' : '',
+    };
+  });
+  bulk.rows.push(...added);
+  renderBulk();
+  // shrink in the background so the list shows up right away
+  for (const r of added) {
+    const small = await shrinkPhoto(r.file);
+    if (run !== bulk.run) return;
+    if (small !== r.file) {
+      URL.revokeObjectURL(r.url);
+      r.file = small;
+      r.url = URL.createObjectURL(small);
+      const img = $(`.bulk-row[data-row="${r.id}"] img`);
+      if (img) img.src = r.url;
+    }
+    r.shrunk = true;
+    if (state.ai) fillBulk();
+  }
+}
+
+async function fillBulk() {
+  if (bulk.filling) return;
+  bulk.filling = true;
+  const run = bulk.run;
+  renderBulkProgress();
+  // two at a time: faster than one, gentle on rate limits
+  const worker = async () => {
+    for (;;) {
+      if (run !== bulk.run) return;
+      const r = bulk.rows.find((x) => x.status === 'queued' && x.shrunk);
+      if (!r) return;
+      r.status = 'filling';
+      r.note = 'AI is looking…';
+      renderBulkRow(r);
+      try {
+        const fd = new FormData();
+        fd.append('photo', r.file, 'photo.jpg');
+        const d = await api('/api/ai/describe', { method: 'POST', body: fd });
+        if (run !== bulk.run || !bulk.rows.includes(r)) continue;
+        const { name, category, ...rest } = d;
+        if (name && !r.touchedName) r.name = name;
+        if (category && !r.touchedCategory) r.category = category;
+        r.fields = rest;
+        r.status = 'ready';
+        r.note = [d.color, d.material, d.pattern && d.pattern !== 'solid' ? d.pattern : ''].filter(Boolean).join(' · ');
+      } catch (e) {
+        if (run !== bulk.run || !bulk.rows.includes(r)) continue;
+        r.status = 'warn';
+        r.note = `AI couldn't fill this in: ${e.message}`;
+      }
+      renderBulkRow(r);
+      renderBulkProgress();
+    }
+  };
+  await Promise.all([worker(), worker()]);
+  if (run !== bulk.run) return;
+  bulk.filling = false;
+  // a photo may have finished shrinking just as the workers stopped
+  if (bulk.rows.some((x) => x.status === 'queued' && x.shrunk)) fillBulk();
+  else renderBulkProgress();
+}
+
+function bulkRowHTML(r) {
+  const locked = r.status === 'saved' || r.status === 'saving' || bulk.saving;
+  const cats = CATS.map(([k]) => `<option value="${k}" ${k === r.category ? 'selected' : ''}>${SINGULAR[k]}</option>`).join('');
+  const busy = ['queued', 'filling', 'saving'].includes(r.status);
+  return `<div class="bulk-row ${r.status} ${busy ? 'busy' : ''}" data-row="${r.id}">
+      <img src="${esc(r.url)}" alt="">
+      <div class="bulk-fields">
+        <input data-k="name" value="${esc(r.name)}" maxlength="120" aria-label="Name" ${locked ? 'disabled' : ''}>
+        <select data-k="category" aria-label="Category" ${locked ? 'disabled' : ''}>${cats}</select>
+        <div class="bulk-note">${esc(r.note)}</div>
+      </div>
+      ${r.status === 'saved' ? '<span class="bulk-done" aria-label="Saved">✓</span>'
+        : `<button type="button" class="icon-btn" data-remove="${r.id}" aria-label="Remove this photo" ${locked ? 'disabled' : ''}>✕</button>`}
+    </div>`;
+}
+
+function renderBulkRow(r) {
+  const el = $(`.bulk-row[data-row="${r.id}"]`);
+  if (!el) return;
+  // keep the cursor where it was if the user is typing in this row
+  const active = el.contains(document.activeElement) ? document.activeElement : null;
+  const key = active?.dataset.k;
+  const caret = key === 'name' ? active.selectionStart : null;
+  el.outerHTML = bulkRowHTML(r);
+  if (key) {
+    const again = $(`.bulk-row[data-row="${r.id}"] [data-k="${key}"]`);
+    if (again && !again.disabled) {
+      again.focus();
+      if (caret !== null) again.setSelectionRange(caret, caret);
+    }
+  }
+}
+
+function renderBulk() {
+  $('#bulk-list').innerHTML = bulk.rows.map(bulkRowHTML).join('');
+  $('#bulk-drop').classList.toggle('compact', bulk.rows.length > 0);
+  $('#bulk-drop strong').textContent = bulk.rows.length ? 'Add more photos' : 'Drop photos here or tap to choose';
+  $('#bulk-drop-hint').textContent = state.ai
+    ? `One photo per item, up to ${BULK_MAX} at a time. AI fills in the details.`
+    : `One photo per item, up to ${BULK_MAX} at a time.`;
+  $('#bulk-cutout-check').hidden = !state.cutout;
+  $('#bulk-cutout').disabled = bulk.saving;
+  renderBulkProgress();
+}
+
+function renderBulkProgress() {
+  const rows = bulk.rows;
+  const btn = $('#bulk-save-btn');
+  const todo = bulkUnsaved();
+  const filling = rows.some((r) => r.status === 'queued' || r.status === 'filling');
+  $('#bulk-progress').hidden = !rows.length;
+  btn.textContent = todo.length ? `Save ${todo.length} item${todo.length > 1 ? 's' : ''}` : 'Save all';
+  btn.disabled = bulk.saving || filling || !todo.length;
+  if (!rows.length) return;
+  let done;
+  let total;
+  let msg;
+  if (bulk.saving) {
+    total = bulk.saveTotal;
+    done = bulk.saveDone;
+    msg = `Saving ${Math.min(done + 1, total)} of ${total}…`;
+    if (state.cutout && $('#bulk-cutout').checked) msg += ' Removing backgrounds takes a moment.';
+  } else if (filling) {
+    total = rows.length;
+    done = rows.filter((r) => r.status !== 'queued' && r.status !== 'filling').length;
+    msg = `AI is filling in ${done} of ${total}… You can fix names and categories meanwhile.`;
+  } else {
+    total = rows.length;
+    done = rows.length - todo.length;
+    const bad = rows.filter((r) => r.status === 'warn' || r.status === 'error').length;
+    msg = todo.length
+      ? `${todo.length} ready to save. Check names and categories; other details can be edited later.`
+        + (bad ? ` ${bad} marked in red ${bad === 1 ? 'needs' : 'need'} a look.` : '')
+      : `All ${rows.length} saved.`;
+  }
+  $('#bulk-status').textContent = msg;
+  $('#bulk-bar').style.width = `${total ? Math.round((done / total) * 100) : 0}%`;
+  $('#bulk-bar').parentElement.hidden = !(bulk.saving || filling);
+}
+
+async function saveBulk(e) {
+  e.preventDefault();
+  const todo = bulkUnsaved();
+  if (!todo.length || bulk.saving) return;
+  const run = bulk.run;
+  bulk.saving = true;
+  bulk.saveTotal = todo.length;
+  bulk.saveDone = 0;
+  renderBulk();
+  const cutout = state.cutout && $('#bulk-cutout').checked;
+  let saved = 0;
+  let keptBackground = 0;
+  for (const r of todo) {
+    if (run !== bulk.run) return;
+    r.status = 'saving';
+    r.note = 'Saving…';
+    renderBulkRow(r);
+    renderBulkProgress();
+    const fd = new FormData();
+    fd.append('name', r.name.trim() || `Item ${r.id}`);
+    fd.append('category', r.category);
+    const f = r.fields;
+    ['color', 'color2', 'pattern', 'material', 'fit', 'brand'].forEach((k) => { if (f[k]) fd.append(k, f[k]); });
+    if (f.warmth) fd.append('warmth', f.warmth);
+    if (f.formality) fd.append('formality', f.formality);
+    if (f.tags) fd.append('tags', Array.isArray(f.tags) ? f.tags.join(', ') : f.tags);
+    fd.append('photo', r.file, 'photo.jpg');
+    if (cutout) fd.append('cutout_photo', 'true');
+    try {
+      const it = await api('/api/items', { method: 'POST', body: fd });
+      if (run !== bulk.run) return;
+      r.status = 'saved';
+      r.note = it.cutout_error ? `Saved. Background kept: ${it.cutout_error}` : 'Saved';
+      if (it.cutout_error) keptBackground += 1;
+      if (it.photo_url) { URL.revokeObjectURL(r.url); r.url = it.photo_url; }
+      saved += 1;
+    } catch (err) {
+      if (run !== bulk.run) return;
+      r.status = 'error';
+      r.note = `Not saved: ${err.message}`;
+    }
+    bulk.saveDone += 1;
+    renderBulkRow(r);
+    renderBulkProgress();
+  }
+  bulk.saving = false;
+  await loadItems();
+  render();
+  renderBulk();
+  const failed = bulkUnsaved().length;
+  if (!failed) {
+    $('#bulk-dialog').close();
+    resetBulk();
+    toast(`Added ${saved} item${saved === 1 ? '' : 's'} to your closet`
+      + (keptBackground ? `. ${keptBackground} kept their background` : ''));
+  } else {
+    toast(`${saved} saved, ${failed} not saved. Fix or remove them, then save again.`);
+  }
+}
+
+function bindBulk() {
+  $('#bulk-btn').onclick = () => openBulk();
+  $('#bulk-input').addEventListener('change', (e) => { addBulkFiles(e.target.files); e.target.value = ''; });
+  dropTarget($('#bulk-drop'), addBulkFiles);
+  $('#bulk-form').addEventListener('submit', saveBulk);
+  const dlg = $('#bulk-dialog');
+  dlg.addEventListener('cancel', (e) => { e.preventDefault(); if (!bulk.saving) closeBulk(); });
+  // drops anywhere in the dialog add photos too
+  dlg.addEventListener('dragover', (e) => { if (hasFiles(e)) e.preventDefault(); });
+  dlg.addEventListener('drop', (e) => { if (!hasFiles(e)) return; e.preventDefault(); addBulkFiles(e.dataTransfer.files); });
+  const list = $('#bulk-list');
+  list.addEventListener('input', (e) => {
+    const k = e.target.dataset.k;
+    const r = bulk.rows.find((x) => x.id === Number(e.target.closest('[data-row]')?.dataset.row));
+    if (!r || !k) return;
+    r[k] = e.target.value;
+    if (k === 'name') r.touchedName = true; else r.touchedCategory = true;
+  });
+  list.addEventListener('change', (e) => {
+    if (e.target.dataset.k !== 'category') return;
+    const r = bulk.rows.find((x) => x.id === Number(e.target.closest('[data-row]')?.dataset.row));
+    if (r) { r.category = e.target.value; r.touchedCategory = true; }
+  });
+  list.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-remove]');
+    if (!b || bulk.saving) return;
+    const i = bulk.rows.findIndex((x) => x.id === Number(b.dataset.remove));
+    if (i < 0) return;
+    const [r] = bulk.rows.splice(i, 1);
+    URL.revokeObjectURL(r.url);
+    b.closest('.bulk-row').remove();
+    renderBulk();
+  });
+}
+
+// Dropping files on the page: one photo opens "Add item", several open "Add many".
+function bindPageDrop() {
+  const overlay = $('#drop-overlay');
+  let depth = 0;
+  const pageDropOK = () => state.view === 'closet' && !$$('dialog[open]').length;
+  window.addEventListener('dragenter', (e) => {
+    if (!hasFiles(e)) return;
+    depth += 1;
+    if (pageDropOK()) overlay.hidden = false;
+  });
+  window.addEventListener('dragleave', () => { depth = Math.max(0, depth - 1); if (!depth) overlay.hidden = true; });
+  // never let the browser open a dropped file in place of the app
+  window.addEventListener('dragover', (e) => { if (hasFiles(e)) { e.preventDefault(); e.dataTransfer.dropEffect = pageDropOK() ? 'copy' : 'none'; } });
+  window.addEventListener('drop', (e) => {
+    depth = 0;
+    overlay.hidden = true;
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    if (!pageDropOK()) return;
+    const files = imageFiles(e.dataTransfer.files);
+    if (!files.length) { toast('That isn’t a photo.'); return; }
+    if (files.length === 1) { openItem(); usePhoto(files[0]); } else openBulk(files);
+  });
+  // paste a copied image into the open item form or the Add many list
+  document.addEventListener('paste', (e) => {
+    const files = imageFiles(e.clipboardData?.files);
+    if (!files.length) return; // plain text paste works as usual
+    if ($('#bulk-dialog').open) { e.preventDefault(); addBulkFiles(files); } else if ($('#item-dialog').open) { e.preventDefault(); usePhoto(files[0]); }
+  });
+}
+
 // ---------- SETTINGS ----------
 let pendingLoc = null;
 
@@ -808,8 +1182,11 @@ async function loadItems() { state.items = await api('/api/items?include_archive
 function init() {
   $$('.tabbar button').forEach((b) => { b.onclick = () => show(b.dataset.view); });
   $('#settings-btn').onclick = openSettings;
-  $$('dialog [data-close]').forEach((b) => { b.onclick = () => b.closest('dialog').close(); });
-  $$('dialog').forEach((d) => d.addEventListener('click', (e) => { if (e.target === d) d.close(); }));
+  const closeDialog = (d) => { if (d.id !== 'bulk-dialog') d.close(); else if (!bulk.saving) closeBulk(); };
+  $$('dialog [data-close]').forEach((b) => { b.onclick = () => closeDialog(b.closest('dialog')); });
+  $$('dialog').forEach((d) => d.addEventListener('click', (e) => { if (e.target === d) closeDialog(d); }));
+  bindBulk();
+  bindPageDrop();
 
   bindSeg($('#occasion-seg'), (v) => { state.occasion = Number(v); state.shuffle = 0; renderToday(); });
   bindSeg($('#day-seg'), (v) => { state.day = Number(v); state.shuffle = 0; renderToday(); });
@@ -836,14 +1213,15 @@ function init() {
   f.category.innerHTML = CATS.map(([k]) => `<option value="${k}">${SINGULAR[k]}</option>`).join('');
   f.warmth.addEventListener('input', () => { $('#warmth-label').textContent = WARMTH[f.warmth.value]; });
   bindSeg($('#formality-seg'), () => {});
-  f.photo.addEventListener('change', () => {
-    const file = f.photo.files[0];
-    if (!file) return;
-    pendingPhoto = file;
-    removePhoto = false;
-    $('#cutout-toggle').checked = true;
-    setPreview(URL.createObjectURL(file));
-    updateAIButtons();
+  f.photo.addEventListener('change', () => { if (f.photo.files[0]) usePhoto(f.photo.files[0]); });
+  dropTarget($('#photo-preview'), (files) => usePhoto(files[0]));
+  // a drop anywhere else in the form counts too
+  $('#item-dialog').addEventListener('dragover', (e) => { if (hasFiles(e)) e.preventDefault(); });
+  $('#item-dialog').addEventListener('drop', (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    const files = imageFiles(e.dataTransfer.files);
+    if (files.length) usePhoto(files[0]); else toast('That isn’t a photo.');
   });
   $('#remove-photo-btn').onclick = () => { pendingPhoto = null; removePhoto = true; f.photo.value = ''; setPreview(null); updateAIButtons(); };
   $('#ai-fill-btn').onclick = aiFill;

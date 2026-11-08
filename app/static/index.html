@@ -42,7 +42,8 @@
     <!-- CLOSET -->
     <section id="view-closet" class="view" hidden>
       <div class="closet-tools">
-        <input id="search" type="search" placeholder="Search name, color, brand, material, tag" autocomplete="off">
+        <input id="search" type="search" placeholder="Search closet" title="Search name, color, brand, material, tag" autocomplete="off">
+        <button id="bulk-btn" class="btn">Add many</button>
         <button id="add-item-btn" class="btn primary">Add item</button>
       </div>
       <div class="chips" id="cat-chips"></div>
@@ -109,6 +110,7 @@
           <input type="file" name="photo" accept="image/*" hidden>
           <div id="photo-preview" class="photo-preview"><span>Add photo</span></div>
         </label>
+        <div class="muted small photo-hint" id="photo-hint">Tap, drop a photo here, or paste one</div>
         <button type="button" id="remove-photo-btn" class="link-btn" hidden>Remove photo</button>
         <label class="check cutout-check" id="cutout-check" hidden><input type="checkbox" id="cutout-toggle" checked> Remove background</label>
         <div class="photo-actions" id="photo-actions" hidden>
@@ -206,6 +208,35 @@
     <option value="corduroy"><option value="fleece"><option value="down"><option value="canvas">
   </datalist>
   <datalist id="model-list"></datalist>
+
+  <!-- ADD MANY -->
+  <dialog id="bulk-dialog">
+    <form id="bulk-form" method="dialog">
+      <div class="dlg-head">
+        <h2>Add many</h2>
+        <button type="button" class="icon-btn" data-close aria-label="Close">✕</button>
+      </div>
+      <div class="dlg-body">
+        <label class="bulk-drop" id="bulk-drop">
+          <input type="file" id="bulk-input" accept="image/*" multiple hidden>
+          <strong>Drop photos here or tap to choose</strong>
+          <span class="muted small" id="bulk-drop-hint">One photo per item, up to 50 at a time.</span>
+        </label>
+        <div class="bulk-progress" id="bulk-progress" hidden>
+          <div class="small" id="bulk-status" role="status"></div>
+          <div class="bar"><div id="bulk-bar"></div></div>
+        </div>
+        <div id="bulk-list" class="bulk-list"></div>
+      </div>
+      <div class="dlg-foot">
+        <label class="check small" id="bulk-cutout-check" hidden><input type="checkbox" id="bulk-cutout" checked> Remove backgrounds</label>
+        <span id="bulk-foot-spacer"></span>
+        <button type="submit" class="btn primary" id="bulk-save-btn" disabled>Save all</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="drop-overlay" class="drop-overlay" hidden><div>Drop photos to add them</div></div>
 
   <!-- LOG OUTFIT -->
   <dialog id="log-dialog">

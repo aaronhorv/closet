@@ -6,6 +6,8 @@ A small self-hosted closet tracker and outfit recommender. It runs as one Docker
 
 - **Closet**: add clothes with a photo, category, main and second color, pattern, material, fit, brand, warmth (1–5) and formality (casual / smart casual / formal). Mark things as in the laundry, favorite them, or archive them.
 - **Clean photos**: backgrounds are removed on your server when you add a photo (free, no AI or key needed). The original is kept, so "Restore original photo" undoes it. Settings → "Remove background from all photos" cleans up existing ones. Works best on a plain or tidy background.
+- **Add many at once**: for the first setup, tap "Add many" on the Closet tab (or drop several photos on it) and pick up to 50 photos. Each becomes an item; check the names and categories, then "Save". With AI on, every photo is filled in automatically (roughly $0.002 per photo with the default model).
+- **Drag and drop**: drop a photo onto the photo box in "Add item", or paste a copied image with Ctrl+V.
 - **Brand picker**: start typing and pick from brands you've used before, or add a new one.
 - **Add from a shop link**: paste a product page link in "Add item" and the app fills in the details and downloads the photo. It works without AI too (it reads the product data most shops put in their pages), but some shops block this.
 - **Today**: suggests 3 outfits from clean clothes, using simple rules (no AI):
@@ -24,7 +26,7 @@ Add your OpenAI API key in the app: gear icon → Settings → AI. Use "Test key
 
 The key is stored in the app's database (`data/closet.db`), and the browser only ever sees its last 4 characters. Keep backups of `data/` private, and set `APP_PASSWORD` if others use your network. You can also set `OPENAI_API_KEY` in `.env` instead; a key saved in Settings takes priority.
 
-- **Fill in with AI**: in the Add/Edit item form, after picking a photo. The photo is sent to OpenAI, which fills in name, category, colors, pattern, material, fit, warmth, formality and tags. You check them and save.
+- **Fill in with AI**: in the Add/Edit item form, after picking a photo. "Add many" does this for every photo automatically. The photo is sent to OpenAI, which fills in name, category, colors, pattern, material, fit, warmth, formality and tags. You check them and save.
 - **Shop links get smarter**: with AI on, the page text and photo go to OpenAI, so links fill in every field.
 - **Build outfits with this**: open an item in the closet. The AI suggests 3 outfits that include it.
 - **Create outfits**: on the Outfits tab. The AI makes 5 outfits from your clean clothes. You can add a note like "work week".

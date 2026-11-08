@@ -82,7 +82,12 @@ def _friendly(e) -> AIError:
     if isinstance(e, openai.APIConnectionError):
         return AIError("Couldn't reach OpenAI. Check the server's internet connection.")
     if isinstance(e, openai.APIStatusError):
-        return AIError(f"OpenAI returned an error ({e.status_code}).")
+        detail = ""
+        body = getattr(e, "body", None)
+        if isinstance(body, dict):
+            detail = str((body.get("error") or body).get("message") or "")
+        detail = (detail or getattr(e, "message", "") or "").strip()
+        return AIError(f"OpenAI returned an error ({e.status_code})" + (f": {detail[:300]}" if detail else "."))
     return AIError("The AI request failed.")
 
 
@@ -445,7 +450,7 @@ def try_on(body: bytes, face, pieces: list, quality: str = "medium") -> bytes:
             prompt=prompt,
             quality=quality,
             size="1024x1536",
-            input_fidelity="high",
+            # no input_fidelity: newer image models reject it (they always keep faces closely)
         )
     except openai.NotFoundError:
         raise AIError(f"OpenAI doesn't know the image model “{TRYON_MODEL}”.")

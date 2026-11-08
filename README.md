@@ -9,9 +9,9 @@ A small self-hosted closet tracker and outfit recommender. It runs as one Docker
 - **Suits & blazers**: link a suit jacket to its trousers. Today suggests them together (formal), or the jacket on its own with other trousers (one step less formal). Tick "Only wear them together" if they never go apart.
 - **Classic menswear rules** (Settings → Outfit rules, on by default): belt matches shoes, black shoes with dark suits at formal occasions, nothing too casual for work or with a suit, a tie only with a shirt, one bold pattern and at most two bold colors, fabrics for the season, and sock rules. Today follows them; the AI gets them plus a fuller style guide.
 - **Socks**: a category of their own. Today and the AI add a matching pair (dress socks in the trousers' color for work).
-- **Not for me (👎)**: hide an outfit from Today or the AI results, optionally with a reason. It's never suggested again; the AI learns from the reasons. Restore it under Outfits → Discarded.
+- **Not for me (👎)**: on Today's new ideas and while reviewing. Tap a reason chip (or type one); it's never suggested again and the AI learns from the reasons. Find it under Outfits → Rejected.
 - **Flat lay**: a free picture of an outfit's pieces laid out together (▦ on any outfit).
-- **Your outfit photos**: add photos to logged or saved outfits (📷, or drop a photo on the card), also right after "Wear this".
+- **Your outfit photos**: add photos to worn outfits in History or to your outfits (📷, or drop a photo on it), also right after "Wear today".
 - **Try-on** (AI): add a full-body photo in Settings → Try-on, then tap "Try on" on an AI or saved outfit to see yourself wearing it. Medium quality costs roughly 3–6 cents per picture and takes up to a minute. Your photos stay on your server and are only sent to OpenAI when you tap the button.
 - **Outfit rules** (Settings): ground rules that Today and the AI always follow, e.g. "Work: tops only shirt or turtleneck, when colder than 10°", "Work: shoes only formal shoes", "Sweater always over another top". Pieces without a type are left out by "only" rules, and Settings lists them.
 - **Clean photos**: backgrounds are removed on your server when you add a photo (free, no AI or key needed). The original is kept, so "Restore original photo" undoes it. Settings → "Remove background from all photos" cleans up existing ones. Works best on a plain or tidy background.
@@ -19,7 +19,7 @@ A small self-hosted closet tracker and outfit recommender. It runs as one Docker
 - **Drag and drop**: drop a photo onto the photo box in "Add item", or paste a copied image with Ctrl+V.
 - **Brand picker**: start typing and pick from brands you've used before, or add a new one.
 - **Add from a shop link**: paste a product page link in "Add item" and the app fills in the details and downloads the photo. It works without AI too (it reads the product data most shops put in their pages), but some shops block this.
-- **Today**: suggests 3 outfits from clean clothes, using simple rules (no AI):
+- **Today**: 2 of your own outfits that suit the weather, occasion and what's clean, plus 1 new idea (👍 Keep / 👎). New ideas use simple rules (no AI):
   - the forecast for your city (free [Open-Meteo](https://open-meteo.com) data, no API key needed)
   - the occasion you pick
   - what you've worn recently (it avoids repeats and brings back neglected pieces)
@@ -27,7 +27,10 @@ A small self-hosted closet tracker and outfit recommender. It runs as one Docker
   - your favorites and how you've rated past outfits
   - a jacket when it's cold or wet; items tagged `waterproof` get a boost on rainy days
 - **History**: tap "Wear this" to log an outfit, or log one by hand. Rate outfits with stars, and future suggestions take the ratings into account. Tap ✎ to change an outfit's pieces, date, occasion or rating and to add a note; when Today suggests that outfit again, it shows your note.
-- **Outfits** (optional AI, see below): saved outfits, plus AI-made outfits you can save or wear.
+- **Outfits**: one list in three parts.
+  - **My outfits**: a grid with a cover per outfit (your try-on picture, otherwise a flat lay). Tap one to edit it, swap a piece, add photos, wear it today or plan it for a date. Filter by occasion and weather, sort by rating or least recently worn. "＋ Create new outfit" lets the AI make some or you pick the pieces yourself.
+  - **To review**: new ideas from the AI, one at a time: 👍 Keep, 👎 Not for me, Later, Try on, or tap a piece to swap it.
+  - **Rejected**: what you turned down, with your reasons; send one back to review if you change your mind.
 
 ## Optional AI features (OpenAI)
 

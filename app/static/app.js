@@ -18,7 +18,7 @@ const state = {
   occasion: 2, day: 0, shuffle: 0,
   filter: 'all', search: '',
   ai: false, aiResults: null, saved: [], history: [],
-  kinds: {}, layerKinds: [], today: [],
+  kinds: {}, layerKinds: [], today: [], library: [],
 };
 
 const $ = (s, el = document) => el.querySelector(s);
@@ -163,16 +163,25 @@ async function renderToday() {
 }
 
 function todayCard(o, i) {
-  if (o.discarded) return discardedCard(o, 'today', i);
+  if (o.rejected) return rejectedPanel(o, 'today', i, o.rejected.reason, false);
   const done = state.day === 0 ? 'Wear this' : 'Plan this';
+  const mine = o.source === 'mine';
+  const flat = `<div class="card-tools">${tool('flat', '▦ Flat lay', 'today', i)}</div>`;
+  const head = mine
+    ? `<div class="outfit-head"><div><div class="card-label">From your outfits</div><h3>${esc(o.name || 'Outfit')}</h3>
+        <div class="muted small">${esc(statsLine(o))}</div></div>${flat}</div>`
+    : `<div class="outfit-head"><div class="card-label idea">${o.kept ? 'New idea · kept ✓' : 'New idea'}</div>${flat}</div>`;
+  const decide = !mine && !o.kept
+    ? `${tool('reject', '👎', 'today', i, '', 'Not for me')}<button type="button" class="btn" data-act="keep" data-kind="today" data-ref="${i}">👍 Keep</button>`
+    : '';
   return `
     <article class="card outfit outfit-card" data-kind="today" data-ref="${i}">
-      ${toolsHTML('today', i)}
+      ${head}
       <div class="outfit-items">
         ${o.items.map((it) => `<figure>${thumb(it)}<figcaption>${esc(it.name)}</figcaption></figure>`).join('')}
       </div>
       ${o.notes.length ? `<ul class="notes">${o.notes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul>` : ''}
-      <button class="btn primary" data-wear="${i}">${done}</button>
+      <div class="outfit-actions">${decide}<button class="btn primary" data-wear="${i}">${done}</button></div>
     </article>`;
 }
 
@@ -203,13 +212,14 @@ function renderWeather(res) {
 }
 
 async function wear(outfit, btn) {
+  if (outfit.library_id) { wearLib({ id: outfit.library_id }, btn, dayDate(state.day), state.occasion); return; }
   btn.disabled = true;
   try {
     const r = await api('/api/outfits', sendJSON('POST', {
       item_ids: outfit.items.map((i) => i.id), worn_on: dayDate(state.day), occasion: state.occasion,
     }));
     btn.textContent = 'Logged ✓';
-    offerPhoto(btn, r.id);
+    offerPhoto(btn.closest('.outfit-actions') || btn, r.id);
     toast(state.day === 0 ? 'Logged. Rate it later in History.' : 'Planned for tomorrow.');
     await loadItems();
   } catch (e) {
@@ -448,10 +458,11 @@ async function renderHistory() {
           <button class="icon-btn" data-del="${o.id}" aria-label="Delete outfit" title="Delete">✕</button></div>
         </div>
         <div class="hist-items">${o.items.map((it) => thumb(it, 'sm')).join('')}</div>
+        ${o.library_name ? `<div class="hist-from">${esc(o.library_name)}</div>` : ''}
         <div class="hist-names">${o.items.map((it) => esc(it.name)).join(' · ')}</div>
         ${o.notes ? `<div class="hist-note">${esc(o.notes)}</div>` : ''}
         ${photosHTML(o, 'history', o.id)}
-        ${toolsHTML('history', o.id)}
+        <div class="card-tools">${tool('flat', '▦ Flat lay', 'history', o.id)}${tool('photo', '📷 Photo', 'history', o.id, '', 'Add your own photo')}</div>
       </article>`;
   }
   box.innerHTML = html;
@@ -464,17 +475,18 @@ let logRating = 0;
 let logEdit = null; // null = new log, {kind: 'history'|'saved', id}
 
 function openLog(outfit = null, kind = 'history') {
-  logEdit = outfit ? { kind, id: outfit.id } : null;
+  const savedMode = kind === 'lib' || kind === 'lib-new';
+  logEdit = outfit ? { kind, id: outfit.id } : (kind === 'lib-new' ? { kind } : null);
   picked = new Set(outfit ? outfit.items.map((i) => i.id) : []);
   logRating = (kind === 'history' && outfit?.rating) || 0;
   const f = $('#log-form');
-  const savedMode = !!outfit && kind === 'saved';
-  $('#log-title').textContent = !outfit ? 'Log an outfit' : (savedMode ? 'Edit saved outfit' : 'Edit outfit');
+  $('#log-title').textContent = kind === 'lib-new' ? 'New outfit'
+    : (!outfit ? 'Log an outfit' : (savedMode ? 'Edit outfit' : 'Edit worn outfit'));
   $('#log-save-btn').textContent = outfit ? 'Save changes' : 'Save outfit';
   $('#log-name-field').hidden = !savedMode;
   $('#log-date-field').hidden = savedMode;
   $('#log-stars-field').hidden = savedMode;
-  f.outfit_name.value = savedMode ? outfit.name || '' : '';
+  f.outfit_name.value = savedMode ? outfit?.name || '' : '';
   f.worn_on.value = outfit?.worn_on || dayDate(0);
   f.occasion.value = String(outfit?.occasion || state.occasion);
   f.notes.value = outfit?.notes || '';
@@ -491,7 +503,9 @@ function openLog(outfit = null, kind = 'history') {
   $('#log-dialog').showModal();
 }
 function updatePickCount() {
-  $('#pick-count').textContent = picked.size ? `${picked.size} piece${picked.size > 1 ? 's' : ''} selected` : 'Tap the pieces you wore.';
+  const lib = logEdit && String(logEdit.kind).startsWith('lib');
+  $('#pick-count').textContent = picked.size ? `${picked.size} piece${picked.size > 1 ? 's' : ''} selected`
+    : (lib ? 'Tap the pieces of this outfit.' : 'Tap the pieces you wore.');
 }
 async function saveLog(e) {
   e.preventDefault();
@@ -499,140 +513,62 @@ async function saveLog(e) {
   const f = e.target;
   const base = { item_ids: [...picked], occasion: Number(f.occasion.value), notes: f.notes.value };
   try {
-    if (logEdit?.kind === 'saved') {
-      await api(`/api/saved/${logEdit.id}`, sendJSON('PUT', { ...base, name: f.outfit_name.value }));
+    let warnings = [];
+    if (logEdit?.kind === 'lib' || logEdit?.kind === 'lib-new') {
+      const body = { ...base, name: f.outfit_name.value };
+      const r = logEdit.kind === 'lib'
+        ? await api(`/api/library/${logEdit.id}`, sendJSON('PUT', body))
+        : await api('/api/library', sendJSON('POST', { ...body, status: 'kept', source: 'own' }));
+      warnings = r.warnings || [];
+      if (logEdit.kind === 'lib-new') libView.tab = 'kept';
+      await loadLibrary();
+      if (logEdit.kind === 'lib') refreshDetail(logEdit.id);
     } else {
       const body = { ...base, worn_on: f.worn_on.value || dayDate(0), rating: logRating || null };
       await api(logEdit ? `/api/outfits/${logEdit.id}` : '/api/outfits', sendJSON(logEdit ? 'PUT' : 'POST', body));
     }
     $('#log-dialog').close();
-    toast(logEdit ? 'Saved' : 'Outfit logged');
+    toast(warnings.length ? `Saved. Heads-up: ${warnings.join(' ')}` : (logEdit ? 'Saved' : 'Outfit logged'));
     await loadItems();
     render();
   } catch (err) { toast(err.message); }
 }
 
-// ---------- OUTFITS (saved + AI) ----------
-function outfitCard(o, idx, kind) {
-  if (o.discarded) return discardedCard(o, kind, idx);
-  const head = (o.name || kind === 'saved') ? `
-    <div class="outfit-head"><h3>${esc(o.name || 'Outfit')}</h3>
-      ${toolsHTML(kind, idx)}
-      ${kind === 'saved' ? `<div><button class="icon-btn" data-edit-saved="${idx}" aria-label="Edit outfit" title="Edit or add a note">✎</button><button class="icon-btn" data-del-saved="${o.id}" aria-label="Delete outfit" title="Delete">✕</button></div>` : ''}</div>` : '';
-  const unavailable = o.items.filter((it) => it.in_laundry || it.archived);
-  const notes = [kind === 'saved' ? '' : o.reason, unavailable.length ? `Not available now: ${unavailable.map((it) => it.name).join(', ')}` : '']
-    .filter(Boolean);
-  const userNote = kind === 'saved' && o.notes ? `<div class="outfit-note">${esc(o.notes)}</div>` : '';
-  const save = kind === 'ai' ? `<button class="btn" data-save="${idx}" ${o.saved ? 'disabled' : ''}>${o.saved ? 'Saved ✓' : 'Save'}</button>` : '';
-  return `
-    <article class="card outfit outfit-card" data-kind="${kind}" data-ref="${idx}">
-      ${head || toolsHTML(kind, idx)}
-      <div class="outfit-items">
-        ${o.items.map((it) => `<figure class="${it.in_laundry || it.archived ? 'dirty' : ''}">${thumb(it)}<figcaption>${esc(it.name)}</figcaption></figure>`).join('')}
-      </div>
-      ${photosHTML(o, kind, idx)}
-      ${userNote}
-      ${notes.length ? `<ul class="notes">${notes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul>` : ''}
-      <div class="outfit-actions">${save}<button class="btn primary" data-wear-${kind}="${idx}">Wear this</button></div>
-    </article>`;
+// ---------- OUTFITS: one list (to review / my outfits / rejected) ----------
+const OCC_SHORT = { 1: 'Casual', 2: 'Work', 3: 'Formal' };
+const REJECT_REASONS = ['Colors clash', 'Too formal', 'Too casual', 'Don’t like a piece', 'Wrong for the season'];
+
+async function loadLibrary() {
+  try { state.library = await api('/api/library'); } catch { state.library = state.library || []; }
+  updateLibCounts();
+}
+function libOf(status) { return (state.library || []).filter((o) => o.status === status); }
+function updateLibCounts() {
+  ['idea', 'kept', 'rejected'].forEach((s) => { $(`#n-${s}`).textContent = libOf(s).length || ''; });
+  $('#outfits-tab').hidden = !(state.ai || (state.library || []).length);
 }
 
-function renderAIResults() {
-  const box = $('#ai-results');
-  const r = state.aiResults;
-  if (!r) { box.innerHTML = ''; return; }
-  if (r.loading) { box.innerHTML = `<div class="loading">${esc(r.label)}…</div>`; return; }
-  if (r.error) {
-    box.innerHTML = `<div class="card empty"><div>${esc(r.error)}</div><button class="btn" id="ai-dismiss">OK</button></div>`;
-    $('#ai-dismiss').onclick = () => { state.aiResults = null; renderAIResults(); };
-    return;
-  }
-  box.innerHTML = `<div class="section-label">${esc(r.label)}</div>${r.outfits.map((o, i) => outfitCard(o, i, 'ai')).join('')}`;
+function statsLine(o) {
+  const bits = [o.times_worn ? `Worn ${o.times_worn}×` : 'Not worn yet'];
+  if (o.last_worn) bits.push(o.last_worn > dayDate(0) ? `planned ${dayLabel(o.last_worn)}` : `last ${agoText(o.last_worn)}`);
+  if (o.avg_rating) bits.push(`★${o.avg_rating}`);
+  if (o.occasion) bits.push(OCC_SHORT[o.occasion]);
+  return bits.join(' · ');
+}
+const SOURCE_LABEL = { ai: 'Made by AI', own: 'Made by you', today: 'From Today' };
+
+function tool(act, label, kind, ref, cls = '', title = '') {
+  return `<button type="button" class="tool-btn ${cls}" data-act="${act}" data-kind="${kind}" data-ref="${ref}" ${title ? `title="${title}" aria-label="${title}"` : ''}>${label}</button>`;
 }
 
-async function renderSaved() {
-  const box = $('#saved-list');
-  let saved;
-  try { saved = await api('/api/saved'); } catch (e) { box.innerHTML = `<div class="card empty">${esc(e.message)}</div>`; return; }
-  state.saved = saved;
-  if (!saved.length) {
-    box.innerHTML = `<div class="section-label">Saved outfits</div><div class="card empty">${state.ai
-      ? 'No saved outfits yet. Create some above, or open an item in your closet and tap “Build outfits with this”.'
-      : 'No saved outfits.'}</div>`;
-    return;
-  }
-  box.innerHTML = `<div class="section-label">Saved outfits</div>${saved.map((o, i) => outfitCard(o, i, 'saved')).join('')}`;
-  bindPhotoDrops(box);
-}
-
-function renderOutfits() {
-  $('#ai-create').hidden = !state.ai;
-  renderAIResults();
-  renderSaved();
-  renderDiscarded();
-}
-
-async function runAI(body, label) {
-  state.aiResults = { loading: true, label: 'Asking the AI' };
-  renderAIResults();
-  try {
-    const r = await api('/api/ai/outfits', sendJSON('POST', body));
-    state.aiResults = { label, outfits: r.outfits };
-  } catch (e) {
-    state.aiResults = { error: e.message };
-  }
-  if (state.view === 'outfits') renderAIResults();
-}
-
-async function wearOutfit(o, btn) {
-  btn.disabled = true;
-  const forms = o.items.map((i) => i.formality);
-  try {
-    const r = await api('/api/outfits', sendJSON('POST', {
-      item_ids: o.items.map((i) => i.id), worn_on: dayDate(0),
-      occasion: o.occasion || Math.round(forms.reduce((a, b) => a + b, 0) / forms.length) || 2,
-    }));
-    btn.textContent = 'Logged ✓';
-    offerPhoto(btn.closest('.outfit-actions') || btn, r.id);
-    toast('Logged. Rate it later in History.');
-    await loadItems();
-  } catch (e) {
-    btn.disabled = false;
-    toast(e.message);
-  }
-}
-
-async function saveAIOutfit(o, btn) {
-  btn.disabled = true;
-  try {
-    await api('/api/saved', sendJSON('POST', {
-      item_ids: o.items.map((i) => i.id), name: o.name, notes: o.reason, occasion: o.occasion,
-      photo_ids: (o.photos || []).map((ph) => ph.id),
-    }));
-    o.saved = true;
-    btn.textContent = 'Saved ✓';
-    renderSaved();
-  } catch (e) {
-    btn.disabled = false;
-    toast(e.message);
-  }
-}
-
-// ---------- outfit tools: flat lay, try-on, not for me, photos ----------
-function getOutfit(kind, ref) {
-  if (kind === 'today') return state.today[ref];
-  if (kind === 'ai') return state.aiResults?.outfits?.[ref];
-  if (kind === 'saved') return state.saved[ref];
-  return state.history.find((o) => o.id === ref);
-}
-
-function toolsHTML(kind, ref) {
-  const b = (act, label, cls = '', title = '') => `<button type="button" class="tool-btn ${cls}" data-act="${act}" data-kind="${kind}" data-ref="${ref}" ${title ? `title="${title}" aria-label="${title}"` : ''}>${label}</button>`;
-  const parts = [b('flat', '▦ Flat lay')];
-  if (state.ai && (kind === 'ai' || kind === 'saved')) parts.push(b('tryon', '👤 Try on', 'ai'));
-  if (kind === 'saved' || kind === 'history') parts.push(b('photo', '📷 Photo', '', 'Add your own photo'));
-  if (kind === 'today' || kind === 'ai') parts.push(b('discard', '👎', '', 'Not for me'));
-  return `<div class="card-tools">${parts.join('')}</div>`;
+function piecesHTML(o, kind, ref, swappable) {
+  return `<div class="outfit-items">${o.items.map((it) => {
+    const inner = `${thumb(it)}<figcaption>${esc(it.name)}</figcaption>`;
+    const dirty = it.in_laundry || it.archived ? 'dirty' : '';
+    return swappable
+      ? `<button type="button" class="piece ${dirty}" data-act="swap" data-kind="${kind}" data-ref="${ref}" data-item="${it.id}" title="Swap this piece">${inner}<span class="swap-hint" aria-hidden="true">↔</span></button>`
+      : `<figure class="${dirty}">${inner}</figure>`;
+  }).join('')}</div>`;
 }
 
 function photosHTML(o, kind, ref) {
@@ -641,15 +577,219 @@ function photosHTML(o, kind, ref) {
     <img src="${esc(ph.url)}" alt="" loading="lazy">${ph.source === 'tryon' ? '<span class="badge">AI</span>' : ''}</button>`).join('')}</div>`;
 }
 
-function cardEl(kind, ref) { return $(`.outfit-card[data-kind="${kind}"][data-ref="${ref}"]`); }
+function heroHTML(o) {
+  const tryon = [...(o.photos || [])].reverse().find((p) => p.source === 'tryon');
+  if (tryon) {
+    return `<button type="button" class="hero" data-act="view" data-kind="lib" data-ref="${o.id}" data-photo="${tryon.id}"><img src="${esc(tryon.url)}" alt="You wearing this outfit"></button>`;
+  }
+  return `<div class="hero">${flatLayHTML(o.items, false)}</div>`;
+}
 
+function coverHTML(o) {
+  const tryon = [...(o.photos || [])].reverse().find((p) => p.source === 'tryon');
+  if (tryon) return `<div class="cover"><img src="${esc(tryon.url)}" alt="" loading="lazy"><span class="badge">Try-on</span></div>`;
+  return `<div class="cover">${flatLayHTML(o.items, false)}</div>`;
+}
+
+function coverCard(o) {
+  const out = o.items.some((it) => it.in_laundry || it.archived);
+  return `<button type="button" class="cover-card outfit-card" data-act="open" data-kind="lib" data-ref="${o.id}">
+      ${coverHTML(o)}
+      <span class="cover-meta"><strong>${esc(o.name || 'Outfit')}</strong>
+        <span class="muted small">${esc(statsLine(o))}${out ? ' · something’s in the wash' : ''}</span></span>
+    </button>`;
+}
+
+let detailId = null;
+function openOutfit(o) {
+  detailId = o.id;
+  viewerCtx = null;
+  const k = 'lib';
+  const ref = o.id;
+  const tools = [];
+  if (state.ai) tools.push(tool('tryon', '👤 Try on', k, ref, 'ai'));
+  tools.push(tool('photo', '📷 Add photo', k, ref), tool('flat', '▦ Flat lay', k, ref),
+    tool('edit', '✎ Edit', k, ref, '', 'Name, note, occasion and pieces'), tool('delete', '🗑', k, ref, '', 'Delete'));
+  const tryon = [...(o.photos || [])].reverse().find((p) => p.source === 'tryon');
+  const cover = tryon
+    ? `<button type="button" class="hero" data-act="view" data-kind="lib" data-ref="${ref}" data-photo="${tryon.id}"><img src="${esc(tryon.url)}" alt="You wearing this outfit"></button>`
+    : `<div class="hero">${flatLayHTML(o.items, false)}</div>`;
+  const unavailable = o.items.filter((it) => it.in_laundry || it.archived);
+  const body = `<div class="detail outfit-card" data-detail="${ref}" data-kind="lib" data-ref="${ref}">
+      ${cover}
+      <div class="muted small">${esc(statsLine(o))}</div>
+      ${o.notes ? `<div class="outfit-note">${esc(o.notes)}</div>` : ''}
+      <div class="card-tools left">${tools.join('')}</div>
+      ${piecesHTML(o, k, ref, true)}
+      <div class="muted small">Tap a piece to swap it for another one.</div>
+      ${unavailable.length ? `<div class="import-status error small">Not available now: ${esc(unavailable.map((i) => i.name).join(', '))}</div>` : ''}
+      ${photosHTML(o, k, ref)}
+    </div>`;
+  const tomorrow = dayDate(1);
+  const foot = `<div class="plan-row"><input type="date" id="plan-date" min="${tomorrow}" value="${tomorrow}" aria-label="Plan for">
+      <button type="button" class="btn" data-act="plan" data-kind="lib" data-ref="${ref}">Plan</button></div>
+    <div class="outfit-actions"><button type="button" class="btn primary" data-act="wear" data-kind="lib" data-ref="${ref}">Wear today</button></div>`;
+  openViewer(o.name || 'Outfit', body, foot);
+  bindPhotoDrops($('#viewer-body'));
+}
+function refreshDetail(id) {
+  const o = getOutfit('lib', id);
+  if (o && $('#viewer').open && detailId === id) openOutfit(o);
+}
+
+function chooseCreate() {
+  viewerCtx = null;
+  detailId = null;
+  openViewer('New outfit', `<div class="create-choices">
+      ${state.ai ? `<div class="create-opt"><strong>✨ Let AI create outfits</strong>
+        <span class="muted small">From your clean clothes, following your rules. They land in “To review”, where you keep the ones you like.</span>
+        <input id="create-note" maxlength="300" placeholder="Optional: what for? e.g. work week" autocomplete="off">
+        <button type="button" class="btn primary" data-cact="ai">Create with AI</button></div>` : ''}
+      <button type="button" class="create-opt" data-cact="own"><strong>👕 Pick the pieces myself</strong>
+        <span class="muted small">Choose from your closet and save it to My outfits.</span></button>
+    </div>`);
+}
+
+function rejectedPanel(o, kind, ref, reason, next) {
+  const picked = new Set((reason || '').split('; ').filter(Boolean));
+  const free = (reason || '').split('; ').filter((r) => r && !REJECT_REASONS.includes(r)).join('; ');
+  return `<article class="card discarded-card outfit-card" data-kind="${kind}" data-ref="${ref}">
+      <div><strong>Not for me.</strong> <span class="muted">It won't be suggested again. Why? (optional)</span></div>
+      <div class="kind-chips">${REJECT_REASONS.map((r) => `<button type="button" class="chip ${picked.has(r) ? 'on' : ''}" data-act="reason-chip" data-kind="${kind}" data-ref="${ref}">${esc(r)}</button>`).join('')}</div>
+      <div class="inline"><input data-reason maxlength="200" placeholder="Or in your own words" value="${esc(free)}">
+        <button type="button" class="btn" data-act="reason" data-kind="${kind}" data-ref="${ref}">Save</button></div>
+      <div class="outfit-actions"><button type="button" class="btn ghost" data-act="undo" data-kind="${kind}" data-ref="${ref}">Undo</button>
+        ${next ? `<button type="button" class="btn primary" data-act="next" data-kind="${kind}" data-ref="${ref}">Next</button>` : ''}</div>
+    </article>`;
+}
+
+function libCard(o, mode) {
+  const k = 'lib';
+  const ref = o.id;
+  const unavailable = o.items.filter((it) => it.in_laundry || it.archived);
+  const notes = [mode === 'review' && o.notes ? o.notes : '',
+    unavailable.length ? `Not available now: ${unavailable.map((it) => it.name).join(', ')}` : ''].filter(Boolean);
+  const userNote = mode !== 'review' && o.notes ? `<div class="outfit-note">${esc(o.notes)}</div>` : '';
+  const sub = mode === 'kept' ? statsLine(o) : (SOURCE_LABEL[o.source] || '');
+  const tools = [tool('flat', '▦ Flat lay', k, ref)];
+  if (mode !== 'rejected' && state.ai) tools.push(tool('tryon', '👤 Try on', k, ref, 'ai'));
+  if (mode === 'kept') tools.push(tool('photo', '📷', k, ref, '', 'Add your own photo'));
+  if (mode !== 'rejected') tools.push(tool('edit', '✎', k, ref, '', 'Edit name, note and pieces'));
+  if (mode !== 'review') tools.push(tool('delete', '🗑', k, ref, '', 'Delete'));
+  let actions;
+  if (mode === 'review') {
+    actions = `${tool('reject', '👎 Not for me', k, ref)}${tool('later', 'Later', k, ref)}<button type="button" class="btn primary" data-act="keep" data-kind="${k}" data-ref="${ref}">👍 Keep</button>`;
+  } else if (mode === 'kept') {
+    actions = `<button type="button" class="btn primary" data-act="wear" data-kind="${k}" data-ref="${ref}">Wear this</button>`;
+  } else {
+    actions = `<button type="button" class="btn" data-act="restore" data-kind="${k}" data-ref="${ref}">Back to review</button>`;
+  }
+  return `
+    <article class="card outfit outfit-card" data-kind="${k}" data-ref="${ref}">
+      <div class="outfit-head"><div><h3>${esc(o.name || 'Outfit')}</h3>${sub ? `<div class="muted small">${esc(sub)}</div>` : ''}</div>
+        <div class="card-tools">${tools.join('')}</div></div>
+      ${mode === 'review' ? heroHTML(o) : ''}
+      ${piecesHTML(o, k, ref, mode !== 'rejected')}
+      ${mode === 'review' ? '<div class="muted small">Tap a piece to swap it.</div>' : ''}
+      ${mode === 'kept' ? photosHTML(o, k, ref) : ''}
+      ${userNote}
+      ${mode === 'rejected' && o.reason ? `<div class="outfit-note">Why not: ${esc(o.reason)}</div>` : ''}
+      ${notes.length ? `<ul class="notes">${notes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul>` : ''}
+      <div class="outfit-actions">${actions}</div>
+    </article>`;
+}
+
+const libView = { tab: null, occ: 0, season: '', sort: 'rating', reviewHold: null };
+
+function seasonOf(o) {
+  const w = o.items.filter((i) => !['accessory', 'socks', 'shoes'].includes(i.category)).map((i) => i.warmth);
+  const avg = w.length ? w.reduce((a, b) => a + b, 0) / w.length : 3;
+  return avg <= 2.4 ? 'warm' : (avg >= 3.6 ? 'cold' : 'mild');
+}
+
+function renderOutfits() {
+  if (!libView.tab) libView.tab = libOf('idea').length ? 'idea' : 'kept';
+  setSeg($('#lib-seg'), libView.tab);
+  const tab = libView.tab;
+  $('#ai-create').hidden = !(state.ai && tab === 'idea');
+  $('#lib-tools').hidden = tab !== 'kept';
+  const box = $('#lib-list');
+  box.classList.toggle('grid2', tab === 'rejected');
+  box.classList.toggle('cover-grid', tab === 'kept');
+  if (tab === 'idea') {
+    const ideas = libOf('idea');
+    const held = libView.reviewHold && state.library.find((o) => o.id === libView.reviewHold.id);
+    if (held && held.status === 'rejected') {
+      box.innerHTML = rejectedPanel(held, 'lib', held.id, held.reason, true);
+      return;
+    }
+    libView.reviewHold = null;
+    if (!ideas.length) {
+      box.innerHTML = `<div class="card empty">Nothing to review. ${state.ai ? 'Create outfits with AI above, or' : 'Tap'} 👍 Keep on Today's new ideas.</div>`;
+      return;
+    }
+    box.innerHTML = `<div class="review-count">1 of ${ideas.length} to review</div>${libCard(ideas[0], 'review')}`;
+    return;
+  }
+  let list = libOf(tab);
+  if (tab === 'kept') {
+    if (libView.occ) list = list.filter((o) => !o.occasion || o.occasion === libView.occ);
+    if (libView.season) list = list.filter((o) => seasonOf(o) === libView.season);
+    const by = {
+      rating: (a, b) => (b.avg_rating || 0) - (a.avg_rating || 0) || b.times_worn - a.times_worn || b.id - a.id,
+      stale: (a, b) => (a.last_worn || '').localeCompare(b.last_worn || '') || b.id - a.id,
+      new: (a, b) => b.id - a.id,
+    }[libView.sort];
+    list = [...list].sort(by);
+  }
+  if (!list.length) {
+    box.innerHTML = `<div class="card empty">${{
+      kept: libOf('kept').length ? 'No outfits match these filters.' : 'No outfits yet. Tap “＋ New outfit”, keep ideas from Today, or review AI ideas.',
+      rejected: 'Nothing rejected.',
+    }[tab]}</div>`;
+    return;
+  }
+  box.innerHTML = tab === 'kept' ? list.map(coverCard).join('') : list.map((o) => libCard(o, tab)).join('');
+}
+
+async function runAI(body) {
+  libView.tab = 'idea';
+  if (state.view !== 'outfits') show('outfits');
+  const box = $('#lib-list');
+  box.innerHTML = '<div class="loading">Asking the AI…</div>';
+  try {
+    const r = await api('/api/ai/outfits', sendJSON('POST', body));
+    await loadLibrary();
+    toast(`${r.outfits.length} new outfit${r.outfits.length === 1 ? '' : 's'} to review`);
+  } catch (e) {
+    toast(e.message);
+  }
+  if (state.view === 'outfits') renderOutfits();
+}
+
+async function libPatch(o, body, msg) {
+  try {
+    const r = await api(`/api/library/${o.id}`, sendJSON('PATCH', body));
+    Object.assign(o, r);
+    updateLibCounts();
+    if (msg) toast(msg);
+    return true;
+  } catch (e) { toast(e.message); return false; }
+}
+
+// ---------- outfit tools: flat lay, try-on, swap, photos ----------
+function getOutfit(kind, ref) {
+  if (kind === 'today') return state.today[ref];
+  if (kind === 'lib') return (state.library || []).find((o) => o.id === ref);
+  return state.history.find((o) => o.id === ref);
+}
+function cardEl(kind, ref) { return $(`.outfit-card[data-kind="${kind}"][data-ref="${ref}"]`); }
 function rerenderCard(kind, ref) {
   if (kind === 'history') { renderHistory(); return; }
+  if (kind === 'lib') { if (state.view === 'outfits') renderOutfits(); refreshDetail(ref); return; }
   const el = cardEl(kind, ref);
   const o = getOutfit(kind, ref);
-  if (!el || !o) return;
-  el.outerHTML = kind === 'today' ? todayCard(o, ref) : outfitCard(o, ref, kind);
-  if (kind === 'saved') bindPhotoDrops($('#saved-list'));
+  if (el && o) el.outerHTML = todayCard(o, ref);
 }
 
 // flat lay: the pieces laid out like a magazine photo (free, made in the browser)
@@ -657,7 +797,7 @@ const FLAT_SPOTS = {
   top: [30, 4, 40, 36], layer: [50, 10, 38, 34], dress: [28, 4, 44, 62], suit: [4, 6, 38, 40],
   outerwear: [58, 3, 38, 42], bottom: [30, 40, 40, 44], shoes: [60, 76, 32, 20], socks: [8, 78, 22, 18],
 };
-function flatLayHTML(items) {
+function flatLayHTML(items, withNames = true) {
   const tops = items.filter((i) => i.category === 'top');
   const acc = items.filter((i) => i.category === 'accessory');
   const outer = items.some((i) => i.category === 'outerwear');
@@ -675,7 +815,7 @@ function flatLayHTML(items) {
     const c = cssColor(it.color);
     return `<div class="fl sw" style="${pos};${c ? `--sw:${c}` : ''}" title="${esc(it.name)}">${CAT_ICON[it.category] || '•'}</div>`;
   }).join('');
-  return `<div class="flatlay">${html}</div><div class="flatlay-names">${items.map((i) => esc(i.name)).join(' · ')}</div>`;
+  return `<div class="flatlay">${html}</div>${withNames ? `<div class="flatlay-names">${items.map((i) => esc(i.name)).join(' · ')}</div>` : ''}`;
 }
 
 let viewerCtx = null;
@@ -709,7 +849,34 @@ function openPhoto(o, kind, ref, photoId) {
   openViewer(ph.source === 'tryon' ? 'Try-on' : 'Your photo', `<img src="${esc(ph.url)}" alt="">${note}`, `<span></span><div class="dlg-foot-left">${foot.join('')}</div>`);
 }
 
+async function openSwap(o, itemId) {
+  let r;
+  try { r = await api(`/api/library/${o.id}/swap?item_id=${itemId}`); } catch (e) { toast(e.message); return; }
+  viewerCtx = { swap: o, itemId };
+  const rows = r.options.map((x) => `<button type="button" class="swap-opt ${x.ok ? '' : 'bad'}" data-vact="swap-to" data-item="${x.item.id}">
+      ${thumb(x.item, 'sm')}<span><strong>${esc(x.item.name)}</strong>
+      <span class="why">${x.ok ? (x.item.in_laundry ? 'In the laundry right now' : 'Fits your rules') : esc(x.problems.join(' '))}</span></span></button>`).join('');
+  openViewer(`Swap: ${r.current.name}`,
+    `<div class="swap-list">${rows || '<div class="muted">Nothing else in this category yet.</div>'}</div>`,
+    r.removable ? '<span></span><div class="dlg-foot-left"><button type="button" class="btn danger-ghost" data-vact="swap-remove">Remove this piece</button></div>' : '');
+}
+
+async function applySwap(newId) {
+  const { swap: o, itemId } = viewerCtx;
+  const ids = o.items.map((i) => i.id).filter((id) => id !== itemId);
+  if (newId) ids.push(newId);
+  try {
+    const r = await api(`/api/library/${o.id}`, sendJSON('PUT', { item_ids: ids, name: o.name, notes: o.notes, occasion: o.occasion }));
+    Object.assign(o, r);
+    if (detailId === o.id) openOutfit(o); else $('#viewer').close();
+    renderOutfits();
+    toast(r.warnings?.length ? `Changed. Note: ${r.warnings[0]}` : 'Changed');
+  } catch (e) { toast(e.message); }
+}
+
 async function viewerAction(act, btn) {
+  if (act === 'swap-to') { applySwap(Number(btn.dataset.item)); return; }
+  if (act === 'swap-remove') { applySwap(null); return; }
   const { o, kind, ref, ph } = viewerCtx || {};
   if (!ph) return;
   if (act === 'delete') {
@@ -719,6 +886,7 @@ async function viewerAction(act, btn) {
       o.photos = o.photos.filter((x) => x.id !== ph.id);
       $('#viewer').close();
       rerenderCard(kind, ref);
+      if (kind === 'lib') refreshDetail(ref);
       toast('Deleted');
     } catch (e) { toast(e.message); }
     return;
@@ -744,9 +912,7 @@ async function tryOn(o, kind, ref, btn) {
   btn.disabled = true;
   btn.textContent = 'Creating… up to a minute';
   try {
-    const ph = await api('/api/tryon', sendJSON('POST', {
-      item_ids: o.items.map((i) => i.id), saved_id: kind === 'saved' ? o.id : null,
-    }));
+    const ph = await api('/api/tryon', sendJSON('POST', { item_ids: o.items.map((i) => i.id), saved_id: o.id }));
     o.photos = [...(o.photos || []), ph];
     rerenderCard(kind, ref);
     openPhoto(o, kind, ref, ph.id);
@@ -757,53 +923,10 @@ async function tryOn(o, kind, ref, btn) {
   }
 }
 
-function discardedCard(o, kind, ref) {
-  return `<article class="card discarded-card outfit-card" data-kind="${kind}" data-ref="${ref}">
-      <div><strong>Not for me.</strong> <span class="muted">This combination won't be suggested again.</span></div>
-      <div class="inline"><input data-reason maxlength="300" placeholder="Why not? (optional) e.g. colors clash" value="${esc(o.discarded.reason || '')}">
-        <button type="button" class="btn" data-act="reason" data-kind="${kind}" data-ref="${ref}">Save</button></div>
-      <button type="button" class="tool-btn" data-act="undo" data-kind="${kind}" data-ref="${ref}">Undo</button>
-    </article>`;
-}
-
-async function discard(o, kind, ref) {
-  try {
-    const r = await api('/api/discarded', sendJSON('POST', { item_ids: o.items.map((i) => i.id) }));
-    o.discarded = { id: r.id, reason: '' };
-    rerenderCard(kind, ref);
-    cardEl(kind, ref)?.querySelector('[data-reason]')?.focus();
-    $('#outfits-tab').hidden = false;
-  } catch (e) { toast(e.message); }
-}
-
-async function saveReason(o, kind, ref) {
-  const reason = cardEl(kind, ref).querySelector('[data-reason]').value;
-  try {
-    await api(`/api/discarded/${o.discarded.id}`, sendJSON('PATCH', { reason }));
-    o.discarded.reason = reason;
-    toast(state.ai ? 'Noted. The AI will take it into account.' : 'Noted');
-  } catch (e) { toast(e.message); }
-}
-
-async function undoDiscard(o, kind, ref) {
-  try {
-    await api(`/api/discarded/${o.discarded.id}`, { method: 'DELETE' });
-    o.discarded = null;
-    rerenderCard(kind, ref);
-  } catch (e) { toast(e.message); }
-}
-
-async function renderDiscarded() {
-  const box = $('#discarded-box');
-  let list;
-  try { list = await api('/api/discarded'); } catch { return; }
-  box.hidden = !list.length;
-  $('#discarded-count').textContent = list.length ? `(${list.length})` : '';
-  $('#discarded-list').innerHTML = list.map((d) => `<div class="discarded-row">
-      <div class="thumbs">${d.items.map((it) => thumb(it, 'sm')).join('')}</div>
-      <button type="button" class="btn" data-restore="${d.id}">Restore</button>
-      <div class="reason">${esc(d.items.map((i) => i.name).join(' · '))}${d.reason ? ` · “${esc(d.reason)}”` : ''}</div>
-    </div>`).join('');
+function reasonFrom(el) {
+  const chips = $$('.chip.on', el).map((b) => b.textContent);
+  const own = el.querySelector('[data-reason]').value.trim();
+  return [...chips, own].filter(Boolean).join('; ');
 }
 
 // your own outfit photos
@@ -817,21 +940,21 @@ async function uploadOutfitPhoto(kind, id, file) {
   fd.append('photo', await shrinkPhoto(file, 1600), 'photo.jpg');
   toast('Uploading photo…');
   try {
-    await api(kind === 'saved' ? `/api/saved/${id}/photos` : `/api/outfits/${id}/photos`, { method: 'POST', body: fd });
+    const ph = await api(kind === 'lib' ? `/api/library/${id}/photos` : `/api/outfits/${id}/photos`, { method: 'POST', body: fd });
     toast(kind === 'new' ? 'Photo added. You’ll find it in History.' : 'Photo added');
-    if (kind === 'saved') renderSaved();
-    else if (state.view === 'history') renderHistory();
+    if (kind === 'lib') {
+      const o = getOutfit('lib', id);
+      if (o) o.photos = [...(o.photos || []), ph];
+      if (state.view === 'outfits') renderOutfits();
+    } else if (state.view === 'history') renderHistory();
   } catch (e) { toast(e.message); }
 }
 function bindPhotoDrops(root) {
-  $$('[data-kind="saved"].outfit-card, .hist[data-kind="history"]', root).forEach((el) => {
+  $$('.outfit-card[data-kind="lib"], .hist[data-kind="history"]', root).forEach((el) => {
     if (el.dataset.dropBound) return;
     el.dataset.dropBound = '1';
     const kind = el.dataset.kind;
-    dropTarget(el, (files) => {
-      const o = getOutfit(kind, Number(el.dataset.ref));
-      if (o) uploadOutfitPhoto(kind, o.id, files[0]);
-    });
+    dropTarget(el, (files) => uploadOutfitPhoto(kind, Number(el.dataset.ref), files[0]));
   });
 }
 function offerPhoto(after, outfitId) {
@@ -839,6 +962,23 @@ function offerPhoto(after, outfitId) {
   wrap.className = 'after-wear';
   wrap.innerHTML = `<button type="button" class="tool-btn" data-act="photo-new" data-outfit-id="${outfitId}">📷 Add a photo of it</button>`;
   after.insertAdjacentElement('afterend', wrap);
+}
+
+async function wearLib(o, btn, worn_on = dayDate(0), occasion = null) {
+  btn.disabled = true;
+  try {
+    const r = await api(`/api/library/${o.id}/wear`, sendJSON('POST', { worn_on, occasion }));
+    const planned = worn_on > dayDate(0);
+    btn.textContent = planned ? 'Planned ✓' : 'Logged ✓';
+    if (!planned) offerPhoto(btn.closest('.outfit-actions') || btn, r.id);
+    toast(planned ? `Planned for ${dayLabel(worn_on)}. It’s in History.` : 'Logged. Rate it later in History.');
+    await loadItems();
+    await loadLibrary();
+    if (state.view === 'outfits') renderOutfits();
+  } catch (e) {
+    btn.disabled = false;
+    toast(e.message);
+  }
 }
 
 async function onOutfitTool(e) {
@@ -851,11 +991,86 @@ async function onOutfitTool(e) {
   if (!o) return;
   if (act === 'flat') openFlatLay(o);
   else if (act === 'tryon') tryOn(o, kind, ref, el);
-  else if (act === 'discard') discard(o, kind, ref);
-  else if (act === 'reason') saveReason(o, kind, ref);
-  else if (act === 'undo') undoDiscard(o, kind, ref);
   else if (act === 'photo') pickOutfitPhoto(kind, o.id);
   else if (act === 'view') openPhoto(o, kind, ref, Number(el.dataset.photo));
+  else if (act === 'swap') openSwap(o, Number(el.dataset.item));
+  else if (act === 'edit') openLog(o, 'lib');
+  else if (act === 'wear') wearLib(o, el);
+  else if (act === 'open') openOutfit(o);
+  else if (act === 'plan') {
+    const d = $('#plan-date').value;
+    if (!d || d <= dayDate(0)) { toast('Pick a day after today.'); return; }
+    wearLib(o, el, d);
+  }
+  else if (act === 'delete') {
+    if (!confirm(`Delete “${o.name || 'this outfit'}”? History keeps the days you wore it.`)) return;
+    try {
+      await api(`/api/library/${o.id}`, { method: 'DELETE' });
+      state.library = state.library.filter((x) => x !== o);
+      if (detailId === o.id && $('#viewer').open) $('#viewer').close();
+      updateLibCounts();
+      renderOutfits();
+      toast('Deleted');
+    } catch (err) { toast(err.message); }
+  } else if (act === 'keep') {
+    if (kind === 'today') keepToday(o, ref);
+    else if (await libPatch(o, { status: 'kept' }, 'Kept. It’s in My outfits now.')) renderOutfits();
+  } else if (act === 'later') {
+    if (await libPatch(o, { later: true })) { await loadLibrary(); renderOutfits(); }
+  } else if (act === 'reject') {
+    if (kind === 'today') rejectToday(o, ref);
+    else if (await libPatch(o, { status: 'rejected' })) { libView.reviewHold = { id: o.id }; renderOutfits(); }
+  } else if (act === 'restore') {
+    if (await libPatch(o, { status: 'idea' }, 'Back in “To review”.')) renderOutfits();
+  } else if (act === 'reason-chip' || act === 'reason') {
+    if (act === 'reason-chip') el.classList.toggle('on');
+    const reason = reasonFrom(el.closest('.discarded-card'));
+    const id = kind === 'today' ? o.rejected?.id : o.id;
+    if (!id) return;
+    try {
+      await api(`/api/library/${id}`, sendJSON('PATCH', { reason }));
+      if (kind === 'today') o.rejected.reason = reason; else o.reason = reason;
+      if (act === 'reason') toast(state.ai ? 'Noted. The AI will take it into account.' : 'Noted');
+    } catch (err) { toast(err.message); }
+  } else if (act === 'undo') {
+    if (kind === 'today') undoRejectToday(o, ref);
+    else if (await libPatch(o, { status: 'idea' })) { libView.reviewHold = null; renderOutfits(); }
+  } else if (act === 'next') {
+    libView.reviewHold = null;
+    renderOutfits();
+  }
+}
+
+// Today: keep or reject a new idea
+async function keepToday(o, ref) {
+  try {
+    const r = await api('/api/library', sendJSON('POST', {
+      item_ids: o.items.map((i) => i.id), status: 'kept', source: 'today', occasion: state.occasion,
+    }));
+    o.kept = true;
+    o.library_id = r.id;
+    rerenderCard('today', ref);
+    toast('Kept. It’s in My outfits now.');
+    loadLibrary();
+  } catch (e) { toast(e.message); }
+}
+async function rejectToday(o, ref) {
+  try {
+    const r = await api('/api/library', sendJSON('POST', {
+      item_ids: o.items.map((i) => i.id), status: 'rejected', source: 'today', occasion: state.occasion,
+    }));
+    o.rejected = { id: r.id, reason: '' };
+    rerenderCard('today', ref);
+    loadLibrary();
+  } catch (e) { toast(e.message); }
+}
+async function undoRejectToday(o, ref) {
+  try {
+    await api(`/api/library/${o.rejected.id}`, { method: 'DELETE' });
+    o.rejected = null;
+    rerenderCard('today', ref);
+    loadLibrary();
+  } catch (e) { toast(e.message); }
 }
 
 // ---------- filling the item form (AI / shop link) ----------
@@ -1630,7 +1845,7 @@ async function loadConfig() {
   state.cutout = cfg.cutout_enabled;
   state.kinds = cfg.kinds || {};
   state.layerKinds = cfg.layer_kinds || [];
-  $('#outfits-tab').hidden = !(cfg.ai_enabled || cfg.saved_count || cfg.discarded_count);
+  $('#outfits-tab').hidden = !(cfg.ai_enabled || cfg.saved_count || cfg.discarded_count || cfg.idea_count);
 }
 async function loadItems() { state.items = await api('/api/items?include_archived=true'); }
 
@@ -1712,35 +1927,38 @@ function init() {
   $('#build-btn').onclick = () => {
     const it = editing;
     $('#item-dialog').close();
-    show('outfits');
-    runAI({ anchor_id: it.id }, `Outfits with your ${it.name}`);
+    runAI({ anchor_id: it.id });
   };
 
   // outfits tab
-  $('#ai-create-btn').onclick = () => {
-    const note = $('#ai-note').value.trim();
-    runAI({ note }, note ? `New outfits: ${note}` : 'New outfits from your closet');
-  };
+  $('#ai-create-btn').onclick = () => runAI({ note: $('#ai-note').value.trim() });
   $('#ai-note').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); $('#ai-create-btn').click(); } });
-  $('#ai-results').addEventListener('click', (e) => {
-    const outfits = state.aiResults?.outfits || [];
-    const w = e.target.closest('[data-wear-ai]');
-    const sv = e.target.closest('[data-save]');
-    if (w) wearOutfit(outfits[Number(w.dataset.wearAi)], w);
-    else if (sv) saveAIOutfit(outfits[Number(sv.dataset.save)], sv);
+  bindSeg($('#lib-seg'), (v) => { libView.tab = v; libView.reviewHold = null; renderOutfits(); window.scrollTo({ top: 0 }); });
+  $('#new-outfit-btn').onclick = chooseCreate;
+  $('#viewer-body').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-cact]');
+    if (!b || e.target.closest('input')) return;
+    const note = $('#create-note')?.value.trim() || '';
+    $('#viewer').close();
+    if (b.dataset.cact === 'ai') runAI({ note });
+    else openLog(null, 'lib-new');
   });
-  $('#saved-list').addEventListener('click', async (e) => {
-    const w = e.target.closest('[data-wear-saved]');
-    const d = e.target.closest('[data-del-saved]');
-    const ed = e.target.closest('[data-edit-saved]');
-    if (ed) openLog(state.saved[Number(ed.dataset.editSaved)], 'saved');
-    else if (w) wearOutfit(state.saved[Number(w.dataset.wearSaved)], w);
-    else if (d) {
-      if (!confirm('Delete this saved outfit?')) return;
-      await api(`/api/saved/${d.dataset.delSaved}`, { method: 'DELETE' });
-      renderSaved();
-    }
+  $('#viewer').addEventListener('close', () => { detailId = null; });
+  $('#lib-occ').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-occ]');
+    if (!b) return;
+    libView.occ = Number(b.dataset.occ);
+    $$('#lib-occ .chip').forEach((x) => x.classList.toggle('on', x === b));
+    renderOutfits();
   });
+  $('#lib-season').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-season]');
+    if (!b) return;
+    libView.season = b.dataset.season;
+    $$('#lib-season .chip').forEach((x) => x.classList.toggle('on', x === b));
+    renderOutfits();
+  });
+  $('#lib-sort').addEventListener('change', (e) => { libView.sort = e.target.value; renderOutfits(); });
   f.addEventListener('submit', saveItem);
   $('#archive-btn').onclick = archiveItem;
   $('#delete-btn').onclick = deleteItem;
@@ -1830,24 +2048,16 @@ function init() {
   });
   // outfit tools and the viewer
   document.addEventListener('click', onOutfitTool);
-  $('#viewer-foot').addEventListener('click', (e) => {
+  ['#viewer-foot', '#viewer-body'].forEach((sel) => $(sel).addEventListener('click', (e) => {
     const b = e.target.closest('[data-vact]');
     if (b) viewerAction(b.dataset.vact, b);
-  });
+  }));
   $('#outfit-photo-input').addEventListener('change', (e) => {
     const file = e.target.files[0];
     e.target.value = '';
     if (file && photoTarget) uploadOutfitPhoto(photoTarget.kind, photoTarget.id, file);
   });
-  $('#discarded-list').addEventListener('click', async (e) => {
-    const b = e.target.closest('[data-restore]');
-    if (!b) return;
-    try {
-      await api(`/api/discarded/${b.dataset.restore}`, { method: 'DELETE' });
-      toast('Restored. It can be suggested again.');
-      renderDiscarded();
-    } catch (err) { toast(err.message); }
-  });
+
   $('#rules-list').addEventListener('click', (e) => {
     const b = e.target.closest('[data-del-rule]');
     if (!b) return;
@@ -1859,10 +2069,15 @@ function init() {
   $('#remove-key-btn').onclick = () => { removeKey = true; $('#settings-form').openai_key.value = ''; showKeyStatus(); };
 }
 
+// iOS ignores user-scalable=no; block pinch and double-tap zoom so the app keeps its layout
+['gesturestart', 'gesturechange'].forEach((t) => document.addEventListener(t, (e) => e.preventDefault()));
+document.addEventListener('touchmove', (e) => { if (e.scale !== undefined && e.scale !== 1) e.preventDefault(); }, { passive: false });
+
 (async function start() {
   init();
   try {
     [state.settings] = await Promise.all([api('/api/settings'), loadConfig(), loadItems()]);
+    await loadLibrary();
   } catch (e) {
     toast(`Couldn't reach the server: ${e.message}`);
   }

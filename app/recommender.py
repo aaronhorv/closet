@@ -166,9 +166,11 @@ def history_key(items):
 
 
 def recommend(items, occasion, temp, rainy, on: date, seed, outerwear_below=16.0, count=3,
-              rules=None, history=None, classic=True, discarded=None):
+              rules=None, history=None, classic=True, discarded=None, library=None, known=None):
     """history: [{"key": frozenset, "rating": int|None, "notes": str}] from logged and saved outfits.
-    classic: apply the classic menswear rules. discarded: set of history keys never to suggest."""
+    classic: apply the classic menswear rules. discarded: set of history keys never to suggest.
+    library: your kept outfits (with items and stats); up to 2 that suit the day come first.
+    known: history keys of every outfit in your list, so new ideas are really new."""
     discarded = discarded or set()
     rng = random.Random(seed)
     active = [i for i in items if not i["archived"] and not i["in_laundry"]]
@@ -246,6 +248,82 @@ def recommend(items, occasion, temp, rainy, on: date, seed, outerwear_below=16.0
         "message": "",
     }
 
+    def key_piece(its):
+        return next((i["id"] for i in its if i["category"] in ("top", "dress")), its[0]["id"])
+
+    def add_socks(its):
+        """The best-matching pair of socks that keeps the outfit within the rules (or none)."""
+        if any(i["category"] == "socks" for i in its):
+            return its
+        ranked = sorted(pools["socks"], reverse=True,
+                        key=lambda p: p[0] + (menswear.sock_score(p[1], its, occasion, temp) * 2 if classic else 0))
+        for _, sock in ranked:
+            if fine(its + [sock]):
+                return its + [sock]
+        return its
+
+    # ---- 1. your own outfits that suit today ----
+    mine = []
+    want_mine = min(2, max(0, count - 1))
+    if library and want_mine:
+        cand = []
+        for lo in library:
+            its = [by_id.get(i["id"]) for i in lo["items"]]
+            if not its or any(x is None for x in its):
+                continue  # a piece is in the wash or archived
+            if lo.get("occasion") and lo["occasion"] != occasion:
+                continue
+            forms = [x["formality"] for x in its if x["category"] not in ("accessory", "socks")]
+            if not lo.get("occasion") and forms and abs(sum(forms) / len(forms) - occasion) >= 0.75:
+                continue
+            wear_its, notes = list(its), []
+            if not need_outer and temp is not None and any(x["category"] == "outerwear" for x in its):
+                wear_its = [x for x in its if x["category"] != "outerwear"]
+                notes.append("Coat left at home: it's mild enough without.")
+            scores, fits = [], True
+            for x in wear_its:
+                tgt = o_target if x["category"] == "outerwear" else base_target
+                if x["category"] not in ("accessory", "socks") and abs(x["warmth"] - tgt) >= 3:
+                    fits = False
+                    break
+                sc = _item_score(x, tgt, occasion, on, rainy)
+                scores.append(-2.0 if sc is None else sc)
+            if not fits or not scores or not fine(wear_its):
+                continue
+            total = sum(scores) / len(scores) + ((lo.get("avg_rating") or 3) - 3) * 0.4 + rng.uniform(0, 1.0)
+            cand.append((total, lo, wear_its, notes))
+        cand.sort(key=lambda c: c[0], reverse=True)
+        for total, lo, its, notes in cand:
+            if len(mine) >= want_mine:
+                break
+            if any(key_piece(its) == m["key"] for m in mine):
+                continue
+            if need_outer and not any(x["category"] == "outerwear" for x in its):
+                for _, coat in pools["outerwear"]:
+                    if fine(its + [coat]):
+                        its = its + [coat]
+                        notes.append(f"Added the {coat['name']} for the weather.")
+                        break
+            its = add_socks(its)
+            mine.append({"key": key_piece(its), "items": its, "score": total, "lo": lo, "notes": notes})
+
+    def mine_out(m):
+        lo = m["lo"]
+        notes = ([f"Your note: “{lo['notes'][:200]}”"] if lo.get("notes") else []) + m["notes"]
+        return {"items": _order(m["items"]), "score": round(m["score"], 2), "notes": notes, "source": "mine",
+                "library_id": lo["id"], "name": lo.get("name") or "", "times_worn": lo.get("times_worn") or 0,
+                "last_worn": lo.get("last_worn"), "avg_rating": lo.get("avg_rating")}
+
+    want_ideas = count - len(mine)
+    known = known or set()
+
+    def finish(message):
+        result["outfits"] = [mine_out(m) for m in mine]
+        if not mine:
+            result["message"] = message
+        return result
+
+    # ---- 2. new ideas ----
     bases = []
     if pools["top"] and pools["bottom"]:
         bases.append(("top", [None] + pools["layer"]))
@@ -253,14 +331,11 @@ def recommend(items, occasion, temp, rainy, on: date, seed, outerwear_below=16.0
         bases.append(("dress", [None]))
     if not bases:
         if not any(i["category"] in ("top", "bottom", "dress") for i in items if not i["archived"]):
-            result["message"] = "Add at least one top and one bottom (or a dress) to get suggestions."
-        elif rules or classic:
-            result["message"] = ("No outfit fits your rules for this occasion and weather. Check Settings → "
-                                 "Outfit rules, or the types of your clothes.")
-        else:
-            result["message"] = ("Not enough clean pieces that suit this occasion. "
-                                 "Try another occasion or clear your laundry.")
-        return result
+            return finish("Add at least one top and one bottom (or a dress) to get suggestions.")
+        if rules or classic:
+            return finish("No outfit fits your rules for this occasion and weather. Check Settings → "
+                          "Outfit rules, or the types of your clothes.")
+        return finish("Not enough clean pieces that suit this occasion. Try another occasion or clear your laundry.")
 
     shoes = pools["shoes"] or [None]
     outers = pools["outerwear"] if need_outer and has_outer else [None]
@@ -268,6 +343,7 @@ def recommend(items, occasion, temp, rainy, on: date, seed, outerwear_below=16.0
     hist = {}
     for h in history or []:
         hist.setdefault(h["key"], h)  # newest first
+    mine_keys = {history_key(m["items"]) for m in mine}
 
     combos = []
     for kind, layers in bases:
@@ -299,7 +375,8 @@ def recommend(items, occasion, temp, rainy, on: date, seed, outerwear_below=16.0
             if bottom is not None and bottom.get("pair_only") and not (jacket and jacket["id"] == bottom.get("match_id")):
                 continue
             key = history_key(its)
-            if key in discarded or not fine(its):
+            # new ideas only: nothing you rejected, already have, or just got from your own outfits
+            if key in discarded or key in known or key in mine_keys or not fine(its):
                 continue
             past = hist.get(key)
             if past and past.get("rating"):
@@ -310,34 +387,26 @@ def recommend(items, occasion, temp, rainy, on: date, seed, outerwear_below=16.0
     combos.sort(key=lambda c: c[0], reverse=True)
 
     if not combos:
-        result["message"] = ("No outfit fits your rules (or you discarded the ones that do) for this occasion and weather. Check Settings → "
-                             "Outfit rules, or the types of your clothes.")
-        return result
-
-    def key_piece(its):
-        return next(i["id"] for i in its if i["category"] in ("top", "dress"))
+        return finish("No new outfit fits your rules for this occasion and weather (or you've already kept or "
+                      "rejected them all). Check Settings → Outfit rules, or the types of your clothes.")
 
     chosen = []
+    taken = [m["key"] for m in mine]
     for strict in (True, False):
         for total, its, suited, past in combos:
-            if len(chosen) >= count:
+            if len(chosen) >= want_ideas:
                 break
             ids = {i["id"] for i in its}
             if any(ids == c["ids"] for c in chosen):
                 continue
-            if strict and any(key_piece(its) == c["key"] or len(ids & c["ids"]) > 2 for c in chosen):
+            if strict and (key_piece(its) in taken or any(
+                    key_piece(its) == c["key"] or len(ids & c["ids"]) > 2 for c in chosen)):
                 continue
             chosen.append({"ids": ids, "key": key_piece(its), "items": its, "score": total,
                            "suited": suited, "past": past})
 
     for c in chosen:
-        # socks: the best-matching pair that keeps the outfit within the rules (or none)
-        ranked = sorted(pools["socks"], reverse=True,
-                        key=lambda p: p[0] + (menswear.sock_score(p[1], c["items"], occasion, temp) * 2 if classic else 0))
-        for _, sock in ranked:
-            if fine(c["items"] + [sock]):
-                c["items"] = c["items"] + [sock]
-                break
+        c["items"] = add_socks(c["items"])
 
     used_acc = set()
     for c in chosen:
@@ -347,7 +416,7 @@ def recommend(items, occasion, temp, rainy, on: date, seed, outerwear_below=16.0
                 used_acc.add(acc["id"])
                 break
 
-    out = []
+    out = [mine_out(m) for m in mine]
     for c in chosen:
         notes = _notes(c["items"], on)
         if c["suited"]:
@@ -358,6 +427,6 @@ def recommend(items, occasion, temp, rainy, on: date, seed, outerwear_below=16.0
                 notes.insert(0, f"Your note: “{past['notes'][:200]}”")
             if past.get("rating"):
                 notes.append(f"You rated this {past['rating']}★ last time.")
-        out.append({"items": _order(c["items"]), "score": round(c["score"], 2), "notes": notes})
+        out.append({"items": _order(c["items"]), "score": round(c["score"], 2), "notes": notes, "source": "idea"})
     result["outfits"] = out
     return result

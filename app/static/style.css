@@ -34,7 +34,7 @@
 }
 
 * { box-sizing: border-box; }
-html { -webkit-text-size-adjust: 100%; }
+html { -webkit-text-size-adjust: 100%; touch-action: manipulation; }
 body {
   margin: 0;
   background: var(--bg);
@@ -422,3 +422,76 @@ dialog form { display: flex; flex-direction: column; max-height: calc(100dvh - 2
 .flatlay .fl img { width: 100%; height: 100%; object-fit: contain; filter: drop-shadow(0 4px 8px rgba(0,0,0,.18)); }
 .flatlay .fl.sw { border-radius: 12px; background: var(--sw, #ccc); box-shadow: 0 4px 10px rgba(0,0,0,.15); font-size: 28px; }
 .flatlay-names { font-size: 13px; color: var(--muted); text-align: center; }
+
+/* outfit list */
+.lib-seg .n { font-weight: 500; opacity: .65; margin-left: 2px; }
+.lib-seg .n:empty { display: none; }
+.lib-tools { display: flex; flex-direction: column; gap: 8px; }
+.lib-tools > .btn { align-self: flex-start; }
+.lib-row { display: flex; gap: 8px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+.lib-row .chips { margin: 0; padding: 0; }
+#lib-sort { padding: 6px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); font-size: 13px; }
+.lib-list { display: grid; gap: 14px; }
+@media (min-width: 760px) { .lib-list.grid2 { grid-template-columns: repeat(2, 1fr); } }
+.lib-list > .empty, .lib-list > .review-count { grid-column: 1 / -1; }
+.review-count { font-size: 13px; color: var(--muted); font-weight: 600; text-align: center; }
+.card-label { font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--accent); }
+.card-label.idea { color: var(--star); }
+.outfit-head h3 + .muted { margin-top: 2px; }
+.hero { appearance: none; border: 0; padding: 0; background: none; display: block; width: 100%; cursor: pointer; }
+.hero img { width: 100%; border-radius: 14px; display: block; max-height: 520px; object-fit: cover; }
+.hero .flatlay { max-height: 460px; margin: 0 auto; }
+.piece {
+  appearance: none; border: 0; background: none; padding: 0; text-align: left; cursor: pointer; position: relative;
+  display: flex; flex-direction: column; gap: 4px; min-width: 0; color: inherit; font: inherit;
+}
+.piece figcaption { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.piece.dirty .thumb { opacity: .45; }
+.piece .swap-hint {
+  position: absolute; top: 4px; right: 4px; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center;
+  background: color-mix(in srgb, var(--surface) 85%, transparent); font-size: 12px; box-shadow: var(--shadow);
+}
+.kept-note { align-self: center; color: var(--accent); font-weight: 600; font-size: 14px; }
+.discarded-card .kind-chips .chip.on { background: var(--text); color: var(--bg); }
+.swap-list { display: flex; flex-direction: column; gap: 6px; }
+.swap-opt {
+  appearance: none; display: grid; grid-template-columns: 48px 1fr; gap: 10px; align-items: center; text-align: left;
+  border: 1px solid var(--line); background: var(--bg); color: var(--text); border-radius: 12px; padding: 6px; cursor: pointer; font: inherit;
+}
+.swap-opt.bad { opacity: .75; }
+.swap-opt .why { font-size: 12px; color: var(--muted); }
+.swap-opt.bad .why { color: var(--danger); }
+.hist-from { font-size: 12px; font-weight: 600; color: var(--accent); }
+
+/* My outfits: cover grid + detail */
+.lib-list.cover-grid { grid-template-columns: repeat(2, 1fr); gap: 12px; }
+@media (min-width: 640px) { .lib-list.cover-grid { grid-template-columns: repeat(3, 1fr); } }
+.cover-card {
+  appearance: none; border: 0; padding: 0; text-align: left; cursor: pointer; color: var(--text); font: inherit;
+  background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden;
+  display: flex; flex-direction: column; min-width: 0;
+}
+.cover { position: relative; aspect-ratio: 3 / 4; background: #f1ede6; overflow: hidden; }
+.cover > img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.cover .flatlay { border-radius: 0; height: 100%; aspect-ratio: auto; }
+.cover .badge {
+  position: absolute; left: 8px; bottom: 8px; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px;
+  background: var(--accent); color: var(--accent-text);
+}
+.cover-meta { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px 10px; min-width: 0; }
+.cover-meta strong { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.detail { display: flex; flex-direction: column; gap: 10px; }
+.card-tools.left { justify-content: flex-start; margin: 0; }
+.plan-row { display: flex; gap: 6px; align-items: center; }
+.plan-row input { padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--text); }
+#viewer-foot .outfit-actions { margin: 0; }
+.create-choices { display: flex; flex-direction: column; gap: 10px; }
+.create-opt {
+  appearance: none; text-align: left; display: flex; flex-direction: column; gap: 6px; padding: 14px; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 14px; background: var(--bg); color: var(--text); font: inherit;
+}
+.create-opt input { padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); color: var(--text); }
+/* iPhone zooms into any field with text under 16px; keep them at 16px there */
+@supports (-webkit-touch-callout: none) {
+  input, select, textarea { font-size: 16px !important; }
+}

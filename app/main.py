@@ -114,7 +114,16 @@ EXTRA_ITEM_COLUMNS = {
     "match_id": "INTEGER",                   # the other half of a suit (jacket <-> trousers)
     "pair_only": "INTEGER NOT NULL DEFAULT 0",  # only wear together with match_id
 }
-EXTRA_SAVED_COLUMNS = {"occasion": "INTEGER"}
+# saved_outfits is the outfit list: status idea (to review), kept (my outfits) or rejected.
+EXTRA_SAVED_COLUMNS = {
+    "occasion": "INTEGER",
+    "status": "TEXT NOT NULL DEFAULT 'kept'",
+    "source": "TEXT NOT NULL DEFAULT ''",      # ai | today | own
+    "reason": "TEXT NOT NULL DEFAULT ''",      # why it was rejected
+    "updated_at": "TEXT",                      # ideas are reviewed oldest first; "Later" bumps this
+}
+EXTRA_LOG_COLUMNS = {"library_id": "INTEGER"}  # the outfit from your list that was worn
+STATUSES = ("idea", "kept", "rejected")
 # Categories that can be linked as a suit.
 PAIRS = {"suit": "bottom", "bottom": "suit"}
 
@@ -153,6 +162,11 @@ def init_db():
         for col, decl in EXTRA_SAVED_COLUMNS.items():
             if col not in have:
                 conn.execute(f"ALTER TABLE saved_outfits ADD COLUMN {col} {decl}")
+        have = {r["name"] for r in conn.execute("PRAGMA table_info(outfits)")}
+        for col, decl in EXTRA_LOG_COLUMNS.items():
+            if col not in have:
+                conn.execute(f"ALTER TABLE outfits ADD COLUMN {col} {decl}")
+        migrate_library(conn)
         load_ai_config(conn)
 
 
@@ -164,6 +178,43 @@ def upgrade_kinds(conn):
             cat = "suit"
         kind = kinds.guess_kind(f"{r['name']} {r['tags']}", cat)
         conn.execute("UPDATE items SET category = ?, kind = ? WHERE id = ?", (cat, kind, r["id"]))
+
+
+def clothes_keys(conn, link_table: str, owner_col: str) -> dict:
+    """owner id -> the set of clothes in it (no coats, socks or accessories), straight from the database."""
+    out = {}
+    for r in conn.execute(f"SELECT l.{owner_col} AS owner, i.id, i.category FROM {link_table} l "
+                          f"JOIN items i ON i.id = l.item_id"):
+        if r["category"] not in ("outerwear", "socks", "accessory"):
+            out.setdefault(r["owner"], set()).add(r["id"])
+    return {k: frozenset(v) for k, v in out.items()}
+
+
+def link_logs(conn):
+    """Connect worn outfits in History to the matching outfit in your list."""
+    kept = {r["id"] for r in conn.execute("SELECT id FROM saved_outfits WHERE status = 'kept' ORDER BY id")}
+    by_key = {}
+    for sid, k in clothes_keys(conn, "saved_outfit_items", "saved_id").items():
+        if sid in kept and k:
+            by_key.setdefault(k, sid)
+    if not by_key:
+        return
+    unlinked = {r["id"] for r in conn.execute("SELECT id FROM outfits WHERE library_id IS NULL")}
+    for oid, k in clothes_keys(conn, "outfit_items", "outfit_id").items():
+        if oid in unlinked and k in by_key:
+            conn.execute("UPDATE outfits SET library_id = ? WHERE id = ?", (by_key[k], oid))
+
+
+def migrate_library(conn):
+    """Discarded outfits move into the outfit list as rejected ones; History gets linked to your outfits."""
+    for d in conn.execute("SELECT * FROM discarded_outfits").fetchall():
+        ids = [r["item_id"] for r in conn.execute("SELECT item_id FROM discarded_items WHERE discarded_id = ?", (d["id"],))]
+        if ids:
+            cur = conn.execute("INSERT INTO saved_outfits (status, source, reason, created_at) VALUES ('rejected', 'today', ?, ?)",
+                               (d["reason"], d["created_at"]))
+            conn.executemany("INSERT INTO saved_outfit_items (saved_id, item_id) VALUES (?, ?)", [(cur.lastrowid, i) for i in ids])
+        conn.execute("DELETE FROM discarded_outfits WHERE id = ?", (d["id"],))
+    link_logs(conn)
 
 
 def raw_settings(conn) -> dict:
@@ -546,6 +597,8 @@ def recommend(
         items = fetch_items(conn, "i.archived = 0")
         history = outfit_history(conn)
         discarded = discarded_keys(conn)
+        library = fetch_library(conn, "kept")
+        known = {recommender.history_key(o["items"]) for o in fetch_library(conn)}
 
     day_wx, wx_error = None, None
     if settings["lat"] is not None and settings["lon"] is not None:
@@ -564,6 +617,7 @@ def recommend(
         items, occasion=occasion, temp=temp, rainy=rain, on=target,
         seed=f"{target}-{occasion}-{seed}", outerwear_below=settings["outerwear_below"],
         rules=settings["rules"], history=history, classic=settings["menswear"], discarded=discarded,
+        library=library, known=known,
     )
     result["weather"] = day_wx
     result["weather_error"] = wx_error
@@ -578,6 +632,7 @@ class OutfitIn(BaseModel):
     occasion: Optional[int] = None
     rating: Optional[int] = None
     notes: str = ""
+    library_id: Optional[int] = None
 
 
 def outfit_history(conn, limit=300) -> list:
@@ -636,7 +691,9 @@ def fetch_outfits(conn, limit=200):
               "photo_url": f"/photos/{r['photo']}" if r["photo"] else None}
         by_outfit.setdefault(r["outfit_id"], []).append(it)
     photos = outfit_photos(conn, "outfit_id", ids)
+    names = {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM saved_outfits")}
     for o in outfits:
+        o["library_name"] = (names.get(o["library_id"]) or "Outfit") if o.get("library_id") in names else None
         o["items"] = sorted(by_outfit.get(o["id"], []),
                             key=lambda i: recommender.DISPLAY_ORDER.index(i["category"]))
         o["photos"] = photos.get(o["id"], [])
@@ -665,11 +722,16 @@ def log_outfit(body: OutfitIn):
         found = conn.execute(f"SELECT COUNT(*) FROM items WHERE id IN ({marks})", ids).fetchone()[0]
         if found != len(ids):
             raise HTTPException(400, "Unknown item in outfit")
+        lib = body.library_id
+        if lib is not None and not conn.execute("SELECT 1 FROM saved_outfits WHERE id = ?", (lib,)).fetchone():
+            lib = None
         cur = conn.execute(
-            "INSERT INTO outfits (worn_on, occasion, rating, notes) VALUES (?, ?, ?, ?)",
-            (worn_on.isoformat(), body.occasion, body.rating, body.notes.strip()[:1000]))
+            "INSERT INTO outfits (worn_on, occasion, rating, notes, library_id) VALUES (?, ?, ?, ?, ?)",
+            (worn_on.isoformat(), body.occasion, body.rating, body.notes.strip()[:1000], lib))
         conn.executemany("INSERT INTO outfit_items (outfit_id, item_id) VALUES (?, ?)",
                          [(cur.lastrowid, i) for i in ids])
+        if lib is None:
+            link_logs(conn)
         return {"id": cur.lastrowid}
 
 
@@ -722,9 +784,26 @@ def ordered(items):
 
 
 def fetch_saved(conn):
-    saved = [dict(r) for r in conn.execute("SELECT * FROM saved_outfits ORDER BY id DESC")]
+    return fetch_library(conn, "kept")
+
+
+def fetch_library(conn, status: Optional[str] = None):
+    """Your outfit list. Ideas oldest first (review order), the rest newest first."""
+    rows = conn.execute("SELECT * FROM saved_outfits" + (" WHERE status = ?" if status else ""),
+                        (status,) if status else ()).fetchall()
+    saved = [dict(r) for r in rows]
     if not saved:
         return []
+    saved.sort(key=lambda o: (0, o["updated_at"] or o["created_at"], o["id"]) if o["status"] == "idea"
+               else (1, "", -o["id"]))
+    stats = {r["library_id"]: r for r in conn.execute(
+        "SELECT library_id, COUNT(*) AS n, MAX(worn_on) AS last, AVG(rating) AS avg FROM outfits "
+        "WHERE library_id IS NOT NULL GROUP BY library_id")}
+    for o in saved:
+        st = stats.get(o["id"])
+        o["times_worn"] = st["n"] if st else 0
+        o["last_worn"] = st["last"] if st else None
+        o["avg_rating"] = round(st["avg"], 1) if st and st["avg"] is not None else None
     items = {i["id"]: i for i in fetch_items(conn)}
     links = {}
     for r in conn.execute("SELECT saved_id, item_id FROM saved_outfit_items"):
@@ -745,6 +824,191 @@ class SavedIn(BaseModel):
     photo_ids: List[int] = []   # try-ons of this outfit made before it was saved
 
 
+def outfit_warnings(conn, items: list, occasion: Optional[int]) -> list:
+    """Which of your rules (and classic menswear rules) an outfit breaks; weather-dependent rules are skipped."""
+    settings = get_settings(conn)
+    occ = occasion or 2
+    out = [rulebook.describe(r) for r in rulebook.broken(items, rulebook.active(settings["rules"], occ, None))]
+    if settings["menswear"]:
+        out += menswear.broken(items, occ, None)
+    if any(i.get("pair_only") and i.get("match_id") not in {x["id"] for x in items} for i in items):
+        out.append("A piece that's only worn with its suit partner is on its own.")
+    return out
+
+
+class LibraryIn(BaseModel):
+    item_ids: List[int]
+    name: str = ""
+    notes: str = ""
+    occasion: Optional[int] = None
+    status: str = "kept"
+    source: str = ""
+    reason: str = ""
+    photo_ids: List[int] = []
+
+
+class LibraryPatch(BaseModel):
+    status: Optional[str] = None
+    reason: Optional[str] = None
+    later: bool = False
+
+
+class WearIn(BaseModel):
+    worn_on: Optional[str] = None
+    occasion: Optional[int] = None
+
+
+def auto_name(items: list) -> str:
+    """A readable default name from the main pieces, e.g. "White oxford shirt & Grey trousers"."""
+    main = [i for i in items if i["category"] in ("dress", "suit")] or [i for i in items if i["category"] == "top"][:1]
+    rest = [i for i in items if i["category"] == "bottom"]
+    return " & ".join(i["name"] for i in (main + rest)[:2])[:80] or "Outfit"
+
+
+def library_add(conn, ids, name="", notes="", occasion=None, status="kept", source="", reason="", photo_ids=()):
+    """Add an outfit to the list, or update the one with exactly these pieces. Returns (id, existed)."""
+    if status not in STATUSES:
+        raise HTTPException(400, "Unknown status")
+    ids = sorted(set(ids))
+    check_items(conn, ids)
+    check_occasion(occasion)
+    want = frozenset(ids)
+    row = None
+    for r in conn.execute("SELECT id, status FROM saved_outfits").fetchall():
+        have = {x["item_id"] for x in conn.execute("SELECT item_id FROM saved_outfit_items WHERE saved_id = ?", (r["id"],))}
+        if have == want:
+            row = r
+            break
+    if row:
+        oid = row["id"]
+        if status != "idea":  # an idea never overrides a decision you made
+            conn.execute("UPDATE saved_outfits SET status = ?, reason = ?, updated_at = datetime('now') WHERE id = ?",
+                         (status, reason.strip()[:300] if status == "rejected" else "", oid))
+        if name.strip():
+            conn.execute("UPDATE saved_outfits SET name = ? WHERE id = ? AND name = ''", (name.strip()[:80], oid))
+    else:
+        cur = conn.execute(
+            "INSERT INTO saved_outfits (name, notes, occasion, status, source, reason) VALUES (?, ?, ?, ?, ?, ?)",
+            (name.strip()[:80] or auto_name([get_item(conn, i) for i in ids]), notes.strip()[:1000], occasion,
+             status, source[:20], reason.strip()[:300]))
+        oid = cur.lastrowid
+        conn.executemany("INSERT INTO saved_outfit_items (saved_id, item_id) VALUES (?, ?)", [(oid, i) for i in ids])
+    for pid in list(photo_ids)[:20]:
+        conn.execute("UPDATE outfit_photos SET saved_id = ? WHERE id = ? AND saved_id IS NULL AND outfit_id IS NULL",
+                     (oid, pid))
+    if status == "kept":
+        link_logs(conn)
+    return oid, bool(row)
+
+
+def library_entry(conn, oid: int) -> dict:
+    o = next((x for x in fetch_library(conn) if x["id"] == oid), None)
+    if o is None:
+        raise HTTPException(404, "Outfit not found")
+    return o
+
+
+@app.get("/api/library")
+def list_library(status: Optional[str] = None):
+    if status is not None and status not in STATUSES:
+        raise HTTPException(400, "Unknown status")
+    with db() as conn:
+        return fetch_library(conn, status)
+
+
+@app.post("/api/library")
+def add_to_library(body: LibraryIn):
+    with db() as conn:
+        oid, existed = library_add(conn, body.item_ids, body.name, body.notes, body.occasion, body.status,
+                                   body.source, body.reason, body.photo_ids)
+        o = library_entry(conn, oid)
+        o["existed"] = existed
+        o["warnings"] = outfit_warnings(conn, o["items"], o["occasion"]) if body.status == "kept" else []
+        return o
+
+
+@app.put("/api/library/{oid}")
+def edit_library(oid: int, body: LibraryIn):
+    ids = sorted(set(body.item_ids))
+    check_occasion(body.occasion)
+    with db() as conn:
+        library_entry(conn, oid)
+        check_items(conn, ids)
+        conn.execute("UPDATE saved_outfits SET name = ?, notes = ?, occasion = ? WHERE id = ?",
+                     (body.name.strip()[:80], body.notes.strip()[:1000], body.occasion, oid))
+        conn.execute("DELETE FROM saved_outfit_items WHERE saved_id = ?", (oid,))
+        conn.executemany("INSERT INTO saved_outfit_items (saved_id, item_id) VALUES (?, ?)", [(oid, i) for i in ids])
+        o = library_entry(conn, oid)
+        o["warnings"] = outfit_warnings(conn, o["items"], o["occasion"])
+        return o
+
+
+@app.patch("/api/library/{oid}")
+def patch_library(oid: int, body: LibraryPatch):
+    with db() as conn:
+        library_entry(conn, oid)
+        if body.status is not None:
+            if body.status not in STATUSES:
+                raise HTTPException(400, "Unknown status")
+            conn.execute("UPDATE saved_outfits SET status = ?, updated_at = datetime('now') WHERE id = ?", (body.status, oid))
+            if body.status != "rejected":
+                conn.execute("UPDATE saved_outfits SET reason = '' WHERE id = ?", (oid,))
+            if body.status == "kept":
+                link_logs(conn)
+        if body.reason is not None:
+            conn.execute("UPDATE saved_outfits SET reason = ? WHERE id = ?", (body.reason.strip()[:300], oid))
+        if body.later:
+            conn.execute("UPDATE saved_outfits SET updated_at = datetime('now', '+1 second') WHERE id = ?", (oid,))
+        return library_entry(conn, oid)
+
+
+@app.delete("/api/library/{oid}")
+def delete_library(oid: int):
+    with db() as conn:
+        conn.execute("DELETE FROM saved_outfits WHERE id = ?", (oid,))
+        conn.execute("UPDATE outfits SET library_id = NULL WHERE library_id = ?", (oid,))
+        purge_outfit_photos(conn)
+    return {"ok": True}
+
+
+@app.post("/api/library/{oid}/wear")
+def wear_library(oid: int, body: WearIn):
+    with db() as conn:
+        o = library_entry(conn, oid)
+    occasion = body.occasion or o["occasion"]
+    if occasion is None:
+        forms = [i["formality"] for i in o["items"]]
+        occasion = round(sum(forms) / len(forms)) if forms else 2
+    return log_outfit(OutfitIn(item_ids=[i["id"] for i in o["items"]], worn_on=body.worn_on,
+                               occasion=occasion, library_id=oid))
+
+
+@app.post("/api/library/{oid}/photos")
+def add_library_photo(oid: int, photo: UploadFile = File(...), cutout_photo: bool = Form(False)):
+    return add_outfit_photo("saved_outfits", "saved_id", oid, photo, cutout_photo)
+
+
+@app.get("/api/library/{oid}/swap")
+def swap_options(oid: int, item_id: int):
+    """Other pieces that could replace item_id in this outfit, with any rules they'd break."""
+    with db() as conn:
+        o = library_entry(conn, oid)
+        current = next((i for i in o["items"] if i["id"] == item_id), None)
+        if current is None:
+            raise HTTPException(404, "That piece isn't in this outfit")
+        rest = [i for i in o["items"] if i["id"] != item_id]
+        in_outfit = {i["id"] for i in o["items"]}
+        options = []
+        for it in fetch_items(conn, "i.archived = 0 AND i.category = ?", (current["category"],)):
+            if it["id"] in in_outfit:
+                continue
+            problems = outfit_warnings(conn, rest + [it], o["occasion"])
+            options.append({"item": it, "ok": not problems, "problems": problems[:3]})
+    options.sort(key=lambda x: (not x["ok"], x["item"]["in_laundry"], x["item"]["name"].lower()))
+    return {"current": current, "options": options,
+            "removable": current["category"] in ("outerwear", "suit", "socks", "accessory")}
+
+
 @app.get("/api/saved")
 def list_saved():
     with db() as conn:
@@ -757,7 +1021,7 @@ def save_outfit(body: SavedIn):
     check_occasion(body.occasion)
     with db() as conn:
         check_items(conn, ids)
-        cur = conn.execute("INSERT INTO saved_outfits (name, notes, occasion) VALUES (?, ?, ?)",
+        cur = conn.execute("INSERT INTO saved_outfits (name, notes, occasion, status) VALUES (?, ?, ?, 'kept')",
                            (body.name.strip()[:80], body.notes.strip()[:1000], body.occasion))
         conn.executemany("INSERT INTO saved_outfit_items (saved_id, item_id) VALUES (?, ?)",
                          [(cur.lastrowid, i) for i in ids])
@@ -798,20 +1062,12 @@ def key_of(ids) -> str:
 
 
 def discarded_keys(conn) -> set:
-    return {frozenset(int(x) for x in r["key"].split(",") if x)
-            for r in conn.execute("SELECT key FROM discarded_outfits")}
+    rejected = {r["id"] for r in conn.execute("SELECT id FROM saved_outfits WHERE status = 'rejected'")}
+    return {k for sid, k in clothes_keys(conn, "saved_outfit_items", "saved_id").items() if sid in rejected}
 
 
 def fetch_discarded(conn):
-    rows = [dict(r) for r in conn.execute("SELECT * FROM discarded_outfits ORDER BY id DESC")]
-    items = {i["id"]: i for i in fetch_items(conn)}
-    links = {}
-    for r in conn.execute("SELECT discarded_id, item_id FROM discarded_items"):
-        if r["item_id"] in items:
-            links.setdefault(r["discarded_id"], []).append(items[r["item_id"]])
-    for d in rows:
-        d["items"] = ordered(links.get(d["id"], []))
-    return rows
+    return fetch_library(conn, "rejected")
 
 
 class DiscardIn(BaseModel):
@@ -834,32 +1090,25 @@ def discard_outfit(body: DiscardIn):
     ids = sorted(set(body.item_ids))
     with db() as conn:
         check_items(conn, ids)
-        its = [get_item(conn, i) for i in ids]
-        key = recommender.history_key(its)
-        if not key:
+        if not recommender.history_key([get_item(conn, i) for i in ids]):
             raise HTTPException(400, "Nothing to discard")
-        k = key_of(key)
-        row = conn.execute("SELECT id FROM discarded_outfits WHERE key = ?", (k,)).fetchone()
-        if row:
-            conn.execute("UPDATE discarded_outfits SET reason = ? WHERE id = ?", (body.reason.strip()[:300], row["id"]))
-            return {"id": row["id"]}
-        cur = conn.execute("INSERT INTO discarded_outfits (key, reason) VALUES (?, ?)", (k, body.reason.strip()[:300]))
-        conn.executemany("INSERT INTO discarded_items (discarded_id, item_id) VALUES (?, ?)",
-                         [(cur.lastrowid, i) for i in ids])
-        return {"id": cur.lastrowid}
+        oid, _ = library_add(conn, ids, status="rejected", source="today", reason=body.reason)
+        return {"id": oid}
 
 
 @app.patch("/api/discarded/{discarded_id}")
 def discard_reason(discarded_id: int, body: DiscardPatch):
     with db() as conn:
-        conn.execute("UPDATE discarded_outfits SET reason = ? WHERE id = ?", (body.reason.strip()[:300], discarded_id))
+        conn.execute("UPDATE saved_outfits SET reason = ? WHERE id = ? AND status = 'rejected'",
+                     (body.reason.strip()[:300], discarded_id))
     return {"ok": True}
 
 
 @app.delete("/api/discarded/{discarded_id}")
 def restore_discarded(discarded_id: int):
     with db() as conn:
-        conn.execute("DELETE FROM discarded_outfits WHERE id = ?", (discarded_id,))
+        conn.execute("DELETE FROM saved_outfits WHERE id = ? AND status = 'rejected'", (discarded_id,))
+        purge_outfit_photos(conn)
     return {"ok": True}
 
 
@@ -1044,9 +1293,10 @@ def try_on(body: TryOnIn):
 @app.get("/api/config")
 def config():
     with db() as conn:
-        saved = conn.execute("SELECT COUNT(*) FROM saved_outfits").fetchone()[0]
-        thrown = conn.execute("SELECT COUNT(*) FROM discarded_outfits").fetchone()[0]
-    return {"ai_enabled": ai.enabled(), "ai_model": ai.model(), "saved_count": saved, "discarded_count": thrown,
+        saved = conn.execute("SELECT COUNT(*) FROM saved_outfits WHERE status = 'kept'").fetchone()[0]
+        thrown = conn.execute("SELECT COUNT(*) FROM saved_outfits WHERE status = 'rejected'").fetchone()[0]
+        ideas = conn.execute("SELECT COUNT(*) FROM saved_outfits WHERE status = 'idea'").fetchone()[0]
+    return {"ai_enabled": ai.enabled(), "ai_model": ai.model(), "saved_count": saved, "discarded_count": thrown, "idea_count": ideas,
             "cutout_enabled": cutout.available(), "kinds": kinds.KINDS,
             "layer_kinds": sorted(kinds.LAYER_KINDS), "base_kinds": sorted(kinds.BASE_KINDS)}
 
@@ -1181,7 +1431,8 @@ def ai_outfits(body: AIOutfitsIn):
         existing = [
             [r["item_id"] for r in conn.execute(
                 "SELECT item_id FROM saved_outfit_items WHERE saved_id = ? ORDER BY item_id", (s["id"],))]
-            for s in conn.execute("SELECT id FROM saved_outfits ORDER BY id DESC LIMIT 30").fetchall()
+            for s in conn.execute("SELECT id FROM saved_outfits WHERE status <> 'rejected' "
+                                  "ORDER BY id DESC LIMIT 60").fetchall()
         ]
     allowed = {i["id"]: i for i in items if not i["in_laundry"]}
     anchor = None
@@ -1205,7 +1456,7 @@ def ai_outfits(body: AIOutfitsIn):
         raise HTTPException(502, str(e))
 
     seen = {frozenset(ids) for ids in existing}
-    thrown = {frozenset(int(x) for x in d["key"].split(",")) for d in discarded}
+    thrown = {recommender.history_key(d["items"]) for d in discarded}
     outfits = []
     for o in raw:
         occasion = o.get("occasion") if o.get("occasion") in (1, 2, 3) else 2
@@ -1225,6 +1476,15 @@ def ai_outfits(body: AIOutfitsIn):
             break
     if not outfits:
         raise HTTPException(502, "The AI's outfits didn't match your closet or your rules. Try again.")
+    # they go into the list as ideas to review
+    with db() as conn:
+        for o in outfits:
+            oid, _ = library_add(conn, [i["id"] for i in o["items"]], o["name"], o["reason"], o["occasion"],
+                                 "idea", "ai")
+            o["id"] = oid
+        listed = {x["id"]: x for x in fetch_library(conn)}
+    for o in outfits:
+        o["status"] = listed[o["id"]]["status"] if o["id"] in listed else "idea"
     return {"outfits": outfits}
 
 

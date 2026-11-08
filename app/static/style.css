@@ -363,3 +363,62 @@ dialog form { display: flex; flex-direction: column; max-height: calc(100dvh - 2
 .rule-builder { display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 14px; }
 .kind-chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .kind-chips .chip { font-size: 13px; }
+
+/* outfit tools, photos, flat lay, try-on, discarded */
+.card-tools { display: flex; justify-content: flex-end; gap: 4px; margin: -6px -6px 0 0; flex-wrap: wrap; }
+.outfit-head { flex-wrap: wrap; }
+.outfit-head .card-tools { margin: 0; }
+.tool-btn {
+  appearance: none; border: 1px solid var(--line); background: var(--surface); color: var(--text);
+  border-radius: 999px; padding: 5px 10px; font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap;
+}
+.tool-btn:disabled { opacity: .55; cursor: default; }
+.tool-btn.ai { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.outfit-photos { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; }
+.outfit-photos .ph {
+  appearance: none; border: 0; padding: 0; background: var(--surface-2); border-radius: 10px; overflow: hidden;
+  width: 72px; height: 96px; flex: none; cursor: pointer; position: relative;
+}
+.outfit-photos .ph img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.outfit-photos .badge {
+  position: absolute; left: 4px; bottom: 4px; font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 999px;
+  background: var(--accent); color: var(--accent-text);
+}
+.outfit-card.drop, .hist.drop { outline: 2px dashed var(--accent); outline-offset: 2px; }
+.after-wear { display: flex; justify-content: center; }
+.discarded-card { display: flex; flex-direction: column; gap: 8px; }
+.discarded-card .inline input { flex: 1; }
+.discarded-box > summary { cursor: pointer; list-style: none; }
+.discarded-box > summary::-webkit-details-marker { display: none; }
+.discarded-box > summary::before { content: "▸ "; }
+.discarded-box[open] > summary::before { content: "▾ "; }
+.discarded-box { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 8px; }
+.discarded-list { display: flex; flex-direction: column; gap: 8px; }
+.discarded-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; padding: 8px; border-radius: 12px; background: var(--surface); box-shadow: var(--shadow); }
+.discarded-row .thumbs { display: flex; gap: 4px; overflow-x: auto; }
+.discarded-row .reason { grid-column: 1 / -1; font-size: 13px; color: var(--muted); }
+.menswear-list summary { cursor: pointer; color: var(--muted); }
+.menswear-list ul { margin: 6px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
+.tryon-photos { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.tryon-slot { display: flex; flex-direction: column; gap: 4px; align-items: center; }
+.tryon-pick { cursor: pointer; width: 100%; }
+.tryon-preview {
+  aspect-ratio: 3 / 4; border-radius: 14px; border: 2px dashed var(--line); background: var(--surface-2);
+  display: grid; place-items: center; text-align: center; padding: 8px; color: var(--muted); font-weight: 600; font-size: 13px; overflow: hidden;
+}
+.tryon-preview.has { border: 0; padding: 0; }
+.tryon-preview img { width: 100%; height: 100%; object-fit: cover; }
+.tryon-preview.drop { border-color: var(--accent); background: var(--accent-soft); }
+#viewer { width: min(560px, calc(100vw - 24px)); }
+.viewer { display: flex; flex-direction: column; max-height: calc(100dvh - 24px); }
+.viewer-body { padding: 4px 16px 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+.viewer-body > img { width: 100%; border-radius: 14px; display: block; background: var(--surface-2); }
+.viewer-note { font-size: 13px; color: var(--muted); }
+#viewer-foot { flex-wrap: wrap; }
+#viewer-foot:empty { display: none; }
+.flatlay { position: relative; aspect-ratio: 3 / 4; border-radius: 16px; background: #f1ede6; overflow: hidden; }
+@media (prefers-color-scheme: dark) { .flatlay { background: #e9e4dc; } }
+.flatlay .fl { position: absolute; display: grid; place-items: center; }
+.flatlay .fl img { width: 100%; height: 100%; object-fit: contain; filter: drop-shadow(0 4px 8px rgba(0,0,0,.18)); }
+.flatlay .fl.sw { border-radius: 12px; background: var(--sw, #ccc); box-shadow: 0 4px 10px rgba(0,0,0,.15); font-size: 28px; }
+.flatlay-names { font-size: 13px; color: var(--muted); text-align: center; }

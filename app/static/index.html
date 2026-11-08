@@ -69,6 +69,11 @@
       </div>
       <div id="ai-results" class="ai-results"></div>
       <div id="saved-list" class="saved-list"></div>
+      <details id="discarded-box" class="discarded-box" hidden>
+        <summary class="section-label">Discarded outfits <span id="discarded-count"></span></summary>
+        <div class="muted small">These are never suggested again. Restore one if you change your mind.</div>
+        <div id="discarded-list" class="discarded-list"></div>
+      </details>
     </section>
   </main>
 
@@ -314,6 +319,12 @@
         </label>
         <h3 class="settings-head">Outfit rules</h3>
         <div class="muted small">Today's suggestions and AI outfits always follow these.</div>
+        <label class="check"><input type="checkbox" id="menswear-toggle"> Classic menswear rules</label>
+        <details class="menswear-list">
+          <summary class="small">What they check</summary>
+          <ul id="menswear-rules" class="small muted"></ul>
+        </details>
+        <div class="muted small">Your own rules:</div>
         <div id="rules-list" class="rules-list"></div>
         <div id="rules-untyped" class="small import-status error"></div>
         <details class="rule-add" id="rule-add">
@@ -368,6 +379,28 @@
           </div>
           <div class="muted small" id="cleanup-status">Originals are kept, so you can undo it per item.</div>
         </div>
+        <h3 class="settings-head">Try-on</h3>
+        <div class="muted small">Shows you wearing an AI or saved outfit. Needs the OpenAI key below. Your photos stay on this server and are only sent to OpenAI when you tap “Try on”.</div>
+        <div class="tryon-photos">
+          <div class="tryon-slot">
+            <label class="tryon-pick"><input type="file" accept="image/*" hidden data-tryon="body">
+              <div class="tryon-preview" id="tryon-body-preview"><span>Full-body photo</span></div></label>
+            <button type="button" class="link-btn" data-remove-tryon="body" hidden>Remove</button>
+          </div>
+          <div class="tryon-slot">
+            <label class="tryon-pick"><input type="file" accept="image/*" hidden data-tryon="face">
+              <div class="tryon-preview" id="tryon-face-preview"><span>Face close-up (optional)</span></div></label>
+            <button type="button" class="link-btn" data-remove-tryon="face" hidden>Remove</button>
+          </div>
+        </div>
+        <div class="muted small">Best results: standing straight, facing the camera, arms relaxed, plain background, fitted clothes, good light.</div>
+        <label class="field">Picture quality
+          <select name="tryon_quality">
+            <option value="low">Low (about 1–2¢ per picture)</option>
+            <option value="medium">Medium (about 3–6¢ per picture)</option>
+            <option value="high">High (about 10–20¢ per picture)</option>
+          </select>
+        </label>
         <h3 class="settings-head">AI (optional)</h3>
         <div class="field">OpenAI API key
           <input name="openai_key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…">
@@ -391,6 +424,19 @@
       </div>
     </form>
   </dialog>
+
+  <!-- PHOTO / FLAT LAY VIEWER -->
+  <dialog id="viewer">
+    <div class="viewer">
+      <div class="dlg-head">
+        <h2 id="viewer-title"></h2>
+        <button type="button" class="icon-btn" data-close aria-label="Close">✕</button>
+      </div>
+      <div class="viewer-body" id="viewer-body"></div>
+      <div class="dlg-foot" id="viewer-foot"></div>
+    </div>
+  </dialog>
+  <input type="file" id="outfit-photo-input" accept="image/*" hidden>
 
   <div id="toast" role="status" aria-live="polite"></div>
   <script src="/app.js"></script>

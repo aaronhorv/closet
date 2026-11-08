@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps
 from pydantic import BaseModel
 
-from . import ai, cutout, kinds, pages, recommender, weather
+from . import ai, cutout, kinds, menswear, pages, recommender, weather
 from . import rules as rulebook
 
 mimetypes.add_type("image/webp", ".webp")  # cut-out photos; not in every system's type list
@@ -70,6 +70,28 @@ CREATE TABLE IF NOT EXISTS saved_outfit_items (
     item_id     INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
     PRIMARY KEY (saved_id, item_id)
 );
+CREATE TABLE IF NOT EXISTS discarded_outfits (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    key         TEXT NOT NULL,          -- sorted item ids of the clothes (no coats, socks, accessories)
+    reason      TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS discarded_items (
+    discarded_id INTEGER NOT NULL REFERENCES discarded_outfits(id) ON DELETE CASCADE,
+    item_id      INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+    PRIMARY KEY (discarded_id, item_id)
+);
+-- Photos of whole outfits: your own pictures and AI try-ons. Exactly one of outfit_id / saved_id is set,
+-- or neither for a try-on of an AI outfit that hasn't been saved yet (cleaned up after a day).
+CREATE TABLE IF NOT EXISTS outfit_photos (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    outfit_id   INTEGER,
+    saved_id    INTEGER,
+    file        TEXT NOT NULL,
+    original    TEXT,
+    source      TEXT NOT NULL DEFAULT 'own',   -- own | tryon
+    created_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -77,7 +99,9 @@ CREATE TABLE IF NOT EXISTS settings (
 """
 
 DEFAULT_SETTINGS = {"unit": "C", "location_name": "", "lat": "", "lon": "", "outerwear_below": "16",
-                    "ai_prompt": "", "openai_key": "", "ai_model": "", "rules": "[]"}
+                    "ai_prompt": "", "openai_key": "", "ai_model": "", "rules": "[]",
+                    "menswear": "1", "tryon_quality": "medium", "tryon_body": "", "tryon_face": ""}
+TRYON_QUALITIES = ("low", "medium", "high")
 
 # Item columns added after the first release. init_db adds any that an older database is missing.
 EXTRA_ITEM_COLUMNS = {
@@ -230,6 +254,12 @@ def get_settings(conn) -> dict:
         "ai_key_source": ai.key_source(),
         "ai_key_hint": f"…{key[-4:]}" if len(key) >= 8 else ("set" if key else ""),
         "rules": read_rules(s),
+        "menswear": s["menswear"] != "0",
+        "menswear_rules": menswear.SUMMARY,
+        "tryon_quality": s["tryon_quality"] if s["tryon_quality"] in TRYON_QUALITIES else "medium",
+        "tryon_body_url": f"/photos/{s['tryon_body']}" if s["tryon_body"] else None,
+        "tryon_face_url": f"/photos/{s['tryon_face']}" if s["tryon_face"] else None,
+        "tryon_model": ai.TRYON_MODEL,
     }
 
 
@@ -240,7 +270,7 @@ def read_rules(raw: dict) -> list:
         return []
 
 
-def save_photo(upload: UploadFile) -> str:
+def save_photo(upload: UploadFile, max_side: int = 1200) -> str:
     try:
         img = Image.open(upload.file)
         img = ImageOps.exif_transpose(img)
@@ -250,7 +280,7 @@ def save_photo(upload: UploadFile) -> str:
         rgba = img.convert("RGBA")
         img = Image.new("RGB", rgba.size, (255, 255, 255))
         img.paste(rgba, mask=rgba.split()[3])
-    img.thumbnail((1200, 1200))
+    img.thumbnail((max_side, max_side))
     name = f"{uuid.uuid4().hex}.jpg"
     img.save(os.path.join(PHOTO_DIR, name), "JPEG", quality=85, optimize=True)
     return name
@@ -481,6 +511,8 @@ def delete_item(item_id: int):
         conn.execute("UPDATE items SET match_id = NULL, pair_only = 0 WHERE match_id = ?", (item_id,))
         conn.execute("DELETE FROM outfits WHERE id NOT IN (SELECT outfit_id FROM outfit_items)")
         conn.execute("DELETE FROM saved_outfits WHERE id NOT IN (SELECT saved_id FROM saved_outfit_items)")
+        conn.execute("DELETE FROM discarded_outfits WHERE id NOT IN (SELECT discarded_id FROM discarded_items)")
+        purge_outfit_photos(conn)
     for f in old_files:
         delete_photo(f)
     return {"ok": True}
@@ -513,6 +545,7 @@ def recommend(
         settings = get_settings(conn)
         items = fetch_items(conn, "i.archived = 0")
         history = outfit_history(conn)
+        discarded = discarded_keys(conn)
 
     day_wx, wx_error = None, None
     if settings["lat"] is not None and settings["lon"] is not None:
@@ -530,7 +563,7 @@ def recommend(
     result = recommender.recommend(
         items, occasion=occasion, temp=temp, rainy=rain, on=target,
         seed=f"{target}-{occasion}-{seed}", outerwear_below=settings["outerwear_below"],
-        rules=settings["rules"], history=history,
+        rules=settings["rules"], history=history, classic=settings["menswear"], discarded=discarded,
     )
     result["weather"] = day_wx
     result["weather_error"] = wx_error
@@ -593,17 +626,20 @@ def fetch_outfits(conn, limit=200):
     ids = [o["id"] for o in outfits]
     marks = ",".join("?" for _ in ids)
     rows = conn.execute(
-        f"""SELECT oi.outfit_id, i.id, i.name, i.category, i.kind, i.color, i.photo
+        f"""SELECT oi.outfit_id, i.id, i.name, i.category, i.kind, i.color, i.photo, i.match_id, i.pair_only
             FROM outfit_items oi JOIN items i ON i.id = oi.item_id
             WHERE oi.outfit_id IN ({marks})""", ids).fetchall()
     by_outfit = {}
     for r in rows:
         it = {"id": r["id"], "name": r["name"], "category": r["category"], "kind": r["kind"], "color": r["color"],
+              "match_id": r["match_id"], "pair_only": bool(r["pair_only"]),
               "photo_url": f"/photos/{r['photo']}" if r["photo"] else None}
         by_outfit.setdefault(r["outfit_id"], []).append(it)
+    photos = outfit_photos(conn, "outfit_id", ids)
     for o in outfits:
         o["items"] = sorted(by_outfit.get(o["id"], []),
                             key=lambda i: recommender.DISPLAY_ORDER.index(i["category"]))
+        o["photos"] = photos.get(o["id"], [])
     return outfits
 
 
@@ -675,6 +711,7 @@ def update_outfit(outfit_id: int, body: OutfitIn):
 def delete_outfit(outfit_id: int):
     with db() as conn:
         conn.execute("DELETE FROM outfits WHERE id = ?", (outfit_id,))
+        purge_outfit_photos(conn)
     return {"ok": True}
 
 
@@ -693,8 +730,10 @@ def fetch_saved(conn):
     for r in conn.execute("SELECT saved_id, item_id FROM saved_outfit_items"):
         if r["item_id"] in items:
             links.setdefault(r["saved_id"], []).append(items[r["item_id"]])
+    photos = outfit_photos(conn, "saved_id", [s["id"] for s in saved])
     for s in saved:
         s["items"] = ordered(links.get(s["id"], []))
+        s["photos"] = photos.get(s["id"], [])
     return saved
 
 
@@ -703,6 +742,7 @@ class SavedIn(BaseModel):
     name: str = ""
     notes: str = ""
     occasion: Optional[int] = None
+    photo_ids: List[int] = []   # try-ons of this outfit made before it was saved
 
 
 @app.get("/api/saved")
@@ -721,6 +761,9 @@ def save_outfit(body: SavedIn):
                            (body.name.strip()[:80], body.notes.strip()[:1000], body.occasion))
         conn.executemany("INSERT INTO saved_outfit_items (saved_id, item_id) VALUES (?, ?)",
                          [(cur.lastrowid, i) for i in ids])
+        for pid in body.photo_ids[:20]:
+            conn.execute("UPDATE outfit_photos SET saved_id = ? WHERE id = ? AND saved_id IS NULL AND outfit_id IS NULL",
+                         (cur.lastrowid, pid))
         return {"id": cur.lastrowid}
 
 
@@ -744,7 +787,256 @@ def update_saved(saved_id: int, body: SavedIn):
 def delete_saved(saved_id: int):
     with db() as conn:
         conn.execute("DELETE FROM saved_outfits WHERE id = ?", (saved_id,))
+        purge_outfit_photos(conn)
     return {"ok": True}
+
+
+# ---------- discarded outfits ----------
+
+def key_of(ids) -> str:
+    return ",".join(str(i) for i in sorted(ids))
+
+
+def discarded_keys(conn) -> set:
+    return {frozenset(int(x) for x in r["key"].split(",") if x)
+            for r in conn.execute("SELECT key FROM discarded_outfits")}
+
+
+def fetch_discarded(conn):
+    rows = [dict(r) for r in conn.execute("SELECT * FROM discarded_outfits ORDER BY id DESC")]
+    items = {i["id"]: i for i in fetch_items(conn)}
+    links = {}
+    for r in conn.execute("SELECT discarded_id, item_id FROM discarded_items"):
+        if r["item_id"] in items:
+            links.setdefault(r["discarded_id"], []).append(items[r["item_id"]])
+    for d in rows:
+        d["items"] = ordered(links.get(d["id"], []))
+    return rows
+
+
+class DiscardIn(BaseModel):
+    item_ids: List[int]
+    reason: str = ""
+
+
+class DiscardPatch(BaseModel):
+    reason: str = ""
+
+
+@app.get("/api/discarded")
+def list_discarded():
+    with db() as conn:
+        return fetch_discarded(conn)
+
+
+@app.post("/api/discarded")
+def discard_outfit(body: DiscardIn):
+    ids = sorted(set(body.item_ids))
+    with db() as conn:
+        check_items(conn, ids)
+        its = [get_item(conn, i) for i in ids]
+        key = recommender.history_key(its)
+        if not key:
+            raise HTTPException(400, "Nothing to discard")
+        k = key_of(key)
+        row = conn.execute("SELECT id FROM discarded_outfits WHERE key = ?", (k,)).fetchone()
+        if row:
+            conn.execute("UPDATE discarded_outfits SET reason = ? WHERE id = ?", (body.reason.strip()[:300], row["id"]))
+            return {"id": row["id"]}
+        cur = conn.execute("INSERT INTO discarded_outfits (key, reason) VALUES (?, ?)", (k, body.reason.strip()[:300]))
+        conn.executemany("INSERT INTO discarded_items (discarded_id, item_id) VALUES (?, ?)",
+                         [(cur.lastrowid, i) for i in ids])
+        return {"id": cur.lastrowid}
+
+
+@app.patch("/api/discarded/{discarded_id}")
+def discard_reason(discarded_id: int, body: DiscardPatch):
+    with db() as conn:
+        conn.execute("UPDATE discarded_outfits SET reason = ? WHERE id = ?", (body.reason.strip()[:300], discarded_id))
+    return {"ok": True}
+
+
+@app.delete("/api/discarded/{discarded_id}")
+def restore_discarded(discarded_id: int):
+    with db() as conn:
+        conn.execute("DELETE FROM discarded_outfits WHERE id = ?", (discarded_id,))
+    return {"ok": True}
+
+
+# ---------- outfit photos (your own pictures and AI try-ons) ----------
+
+def photo_dict(r) -> dict:
+    return {"id": r["id"], "url": f"/photos/{r['file']}", "source": r["source"],
+            "has_original": bool(r["original"]), "created_at": r["created_at"]}
+
+
+def outfit_photos(conn, column: str, ids) -> dict:
+    if not ids:
+        return {}
+    marks = ",".join("?" for _ in ids)
+    out = {}
+    for r in conn.execute(f"SELECT * FROM outfit_photos WHERE {column} IN ({marks}) ORDER BY id", list(ids)):
+        out.setdefault(r[column], []).append(photo_dict(r))
+    return out
+
+
+def purge_outfit_photos(conn):
+    """Delete photos whose outfit is gone, and unsaved try-ons older than a day."""
+    rows = conn.execute("""SELECT id, file, original FROM outfit_photos
+        WHERE (outfit_id IS NOT NULL AND outfit_id NOT IN (SELECT id FROM outfits))
+           OR (saved_id IS NOT NULL AND saved_id NOT IN (SELECT id FROM saved_outfits))
+           OR (outfit_id IS NULL AND saved_id IS NULL AND created_at < datetime('now', '-1 day'))""").fetchall()
+    for r in rows:
+        delete_photo(r["file"])
+        delete_photo(r["original"])
+        conn.execute("DELETE FROM outfit_photos WHERE id = ?", (r["id"],))
+
+
+def add_outfit_photo(table: str, column: str, owner_id: int, photo: UploadFile, cutout_photo: bool):
+    with db() as conn:
+        if not conn.execute(f"SELECT 1 FROM {table} WHERE id = ?", (owner_id,)).fetchone():
+            raise HTTPException(404, "Outfit not found")
+    fields = {"photo": save_photo(photo, max_side=1600)}
+    warning = apply_cutout(fields) if cutout_photo else None
+    with db() as conn:
+        cur = conn.execute(f"INSERT INTO outfit_photos ({column}, file, original, source) VALUES (?, ?, ?, 'own')",
+                           (owner_id, fields["photo"], fields.get("photo_original")))
+        row = conn.execute("SELECT * FROM outfit_photos WHERE id = ?", (cur.lastrowid,)).fetchone()
+    return {**photo_dict(row), "cutout_error": warning}
+
+
+@app.post("/api/outfits/{outfit_id}/photos")
+def add_logged_photo(outfit_id: int, photo: UploadFile = File(...), cutout_photo: bool = Form(False)):
+    return add_outfit_photo("outfits", "outfit_id", outfit_id, photo, cutout_photo)
+
+
+@app.post("/api/saved/{saved_id}/photos")
+def add_saved_photo(saved_id: int, photo: UploadFile = File(...), cutout_photo: bool = Form(False)):
+    return add_outfit_photo("saved_outfits", "saved_id", saved_id, photo, cutout_photo)
+
+
+def get_outfit_photo(conn, photo_id: int):
+    row = conn.execute("SELECT * FROM outfit_photos WHERE id = ?", (photo_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "Photo not found")
+    return row
+
+
+@app.delete("/api/outfit-photos/{photo_id}")
+def delete_outfit_photo(photo_id: int):
+    with db() as conn:
+        row = get_outfit_photo(conn, photo_id)
+        conn.execute("DELETE FROM outfit_photos WHERE id = ?", (photo_id,))
+    delete_photo(row["file"])
+    delete_photo(row["original"])
+    return {"ok": True}
+
+
+@app.post("/api/outfit-photos/{photo_id}/cutout")
+def cutout_outfit_photo(photo_id: int):
+    with db() as conn:
+        row = get_outfit_photo(conn, photo_id)
+    source = row["original"] or row["file"]
+    try:
+        new = make_cutout(source)
+    except cutout.CutoutError as e:
+        raise HTTPException(400, str(e))
+    with db() as conn:
+        conn.execute("UPDATE outfit_photos SET file = ?, original = ? WHERE id = ?", (new, source, photo_id))
+        row2 = get_outfit_photo(conn, photo_id)
+    if row["original"]:
+        delete_photo(row["file"])
+    return photo_dict(row2)
+
+
+@app.post("/api/outfit-photos/{photo_id}/restore")
+def restore_outfit_photo(photo_id: int):
+    with db() as conn:
+        row = get_outfit_photo(conn, photo_id)
+        if not row["original"]:
+            raise HTTPException(400, "There's no original photo to go back to.")
+        conn.execute("UPDATE outfit_photos SET file = original, original = NULL WHERE id = ?", (photo_id,))
+        row2 = get_outfit_photo(conn, photo_id)
+    delete_photo(row["file"])
+    return photo_dict(row2)
+
+
+# ---------- try-on: you wearing an outfit (OpenAI image model) ----------
+
+@app.post("/api/tryon/photo/{which}")
+def set_tryon_photo(which: str, photo: UploadFile = File(...)):
+    if which not in ("body", "face"):
+        raise HTTPException(404, "Unknown photo")
+    name = save_photo(photo, max_side=1600)
+    with db() as conn:
+        old = raw_settings(conn)[f"tryon_{which}"]
+        conn.execute("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                     (f"tryon_{which}", name))
+        out = get_settings(conn)
+    delete_photo(old)
+    return out
+
+
+@app.delete("/api/tryon/photo/{which}")
+def delete_tryon_photo(which: str):
+    if which not in ("body", "face"):
+        raise HTTPException(404, "Unknown photo")
+    with db() as conn:
+        old = raw_settings(conn)[f"tryon_{which}"]
+        conn.execute("DELETE FROM settings WHERE key = ?", (f"tryon_{which}",))
+        out = get_settings(conn)
+    delete_photo(old)
+    return out
+
+
+class TryOnIn(BaseModel):
+    item_ids: List[int]
+    saved_id: Optional[int] = None
+
+
+def _read_photo(name: str) -> Optional[bytes]:
+    try:
+        with open(os.path.join(PHOTO_DIR, os.path.basename(name)), "rb") as fh:
+            return fh.read()
+    except OSError:
+        return None
+
+
+@app.post("/api/tryon")
+def try_on(body: TryOnIn):
+    require_ai()
+    ids = list(dict.fromkeys(body.item_ids))
+    with db() as conn:
+        s = raw_settings(conn)
+        check_items(conn, ids)
+        its = ordered([get_item(conn, i) for i in ids])
+        if body.saved_id is not None and not conn.execute(
+                "SELECT 1 FROM saved_outfits WHERE id = ?", (body.saved_id,)).fetchone():
+            raise HTTPException(404, "Outfit not found")
+    body_photo = _read_photo(s["tryon_body"]) if s["tryon_body"] else None
+    if not body_photo:
+        raise HTTPException(400, "Add a full-body photo of yourself in Settings → Try-on first.")
+    face = _read_photo(s["tryon_face"]) if s["tryon_face"] else None
+    pieces = []
+    for it in its:
+        photo = _read_photo(it["photo"]) if it.get("photo") else None
+        pieces.append((it, photo))
+    quality = s["tryon_quality"] if s["tryon_quality"] in TRYON_QUALITIES else "medium"
+    try:
+        image = ai.try_on(body_photo, face, pieces, quality)
+    except ai.AIError as e:
+        raise HTTPException(502, str(e))
+    try:
+        img = Image.open(io.BytesIO(image)).convert("RGB")
+    except Exception:
+        raise HTTPException(502, "The AI's picture couldn't be read. Try again.")
+    name = f"{uuid.uuid4().hex}.jpg"
+    img.save(os.path.join(PHOTO_DIR, name), "JPEG", quality=90)
+    with db() as conn:
+        cur = conn.execute("INSERT INTO outfit_photos (saved_id, file, source) VALUES (?, ?, 'tryon')",
+                           (body.saved_id, name))
+        row = conn.execute("SELECT * FROM outfit_photos WHERE id = ?", (cur.lastrowid,)).fetchone()
+    return photo_dict(row)
 
 
 # ---------- AI (optional, needs OPENAI_API_KEY) ----------
@@ -753,7 +1045,8 @@ def delete_saved(saved_id: int):
 def config():
     with db() as conn:
         saved = conn.execute("SELECT COUNT(*) FROM saved_outfits").fetchone()[0]
-    return {"ai_enabled": ai.enabled(), "ai_model": ai.model(), "saved_count": saved,
+        thrown = conn.execute("SELECT COUNT(*) FROM discarded_outfits").fetchone()[0]
+    return {"ai_enabled": ai.enabled(), "ai_model": ai.model(), "saved_count": saved, "discarded_count": thrown,
             "cutout_enabled": cutout.available(), "kinds": kinds.KINDS,
             "layer_kinds": sorted(kinds.LAYER_KINDS), "base_kinds": sorted(kinds.BASE_KINDS)}
 
@@ -833,10 +1126,10 @@ def ai_describe(photo: UploadFile = File(...)):
 
 
 # How many pieces of each category one outfit may hold (two tops = layering).
-OUTFIT_LIMITS = {"top": 2, "bottom": 1, "dress": 1, "suit": 1, "outerwear": 1, "shoes": 1, "accessory": 2}
+OUTFIT_LIMITS = {"top": 2, "bottom": 1, "dress": 1, "suit": 1, "outerwear": 1, "shoes": 1, "socks": 1, "accessory": 2}
 
 
-def check_outfit(ids, allowed: dict, anchor_id=None, rules=None):
+def check_outfit(ids, allowed: dict, anchor_id=None, rules=None, classic=None):
     """Keep only known, clean items; return the item list or None if it isn't a full outfit
     or breaks a ground rule or a suit that must be worn together."""
     picked, counts = [], {}
@@ -857,6 +1150,8 @@ def check_outfit(ids, allowed: dict, anchor_id=None, rules=None):
     if any(i.get("pair_only") and i.get("match_id") not in ids_in for i in picked):
         return None
     if rules and rulebook.broken(picked, rules):
+        return None
+    if classic is not None and menswear.broken(picked, *classic):
         return None
     return ordered(picked)
 
@@ -882,6 +1177,7 @@ def ai_outfits(body: AIOutfitsIn):
         settings = get_settings(conn)
         items = fetch_items(conn, "i.archived = 0")
         history = outfit_history(conn, 60)
+        discarded = fetch_discarded(conn)[:40]
         existing = [
             [r["item_id"] for r in conn.execute(
                 "SELECT item_id FROM saved_outfit_items WHERE saved_id = ? ORDER BY item_id", (s["id"],))]
@@ -901,17 +1197,22 @@ def ai_outfits(body: AIOutfitsIn):
     temp = today_temp(settings)
     try:
         raw = ai.build_outfits(list(allowed.values()), count, anchor, body.note, existing,
-                              settings["ai_prompt"], rules=settings["rules"], history=history, temp=temp)
+                              settings["ai_prompt"], rules=settings["rules"], history=history, temp=temp,
+                              classic=settings["menswear"],
+                              discarded=[{"item_ids": [i["id"] for i in d["items"]], "reason": d["reason"]}
+                                         for d in discarded])
     except ai.AIError as e:
         raise HTTPException(502, str(e))
 
     seen = {frozenset(ids) for ids in existing}
+    thrown = {frozenset(int(x) for x in d["key"].split(",")) for d in discarded}
     outfits = []
     for o in raw:
         occasion = o.get("occasion") if o.get("occasion") in (1, 2, 3) else 2
         its = check_outfit(o.get("item_ids") or [], allowed, anchor["id"] if anchor else None,
-                           rulebook.active(settings["rules"], occasion, temp))
-        if not its:
+                           rulebook.active(settings["rules"], occasion, temp),
+                           (occasion, temp) if settings["menswear"] else None)
+        if not its or recommender.history_key(its) in thrown:
             continue
         key = frozenset(i["id"] for i in its)
         if key in seen:
@@ -939,6 +1240,8 @@ class SettingsIn(BaseModel):
     openai_key: Optional[str] = None    # "" removes the saved key
     ai_model: Optional[str] = None      # "" = default
     rules: Optional[list] = None
+    menswear: Optional[bool] = None
+    tryon_quality: Optional[str] = None
 
 
 @app.get("/api/settings")
@@ -957,6 +1260,10 @@ def write_settings(body: SettingsIn):
             data[k] = data[k].strip()[:limit]
     if "rules" in data:
         data["rules"] = json.dumps(rulebook.normalize(data["rules"]))
+    if "menswear" in data:
+        data["menswear"] = "0" if data["menswear"] is False else "1"
+    if "tryon_quality" in data and data["tryon_quality"] not in TRYON_QUALITIES:
+        raise HTTPException(400, "Quality must be low, medium or high")
     with db() as conn:
         for k, v in data.items():
             conn.execute("INSERT INTO settings (key, value) VALUES (?, ?) "
@@ -974,6 +1281,10 @@ def geocode(q: str):
         return weather.geocode(q.strip())
     except Exception:
         raise HTTPException(502, "Location search is unavailable right now")
+
+
+with db() as _conn:  # leftovers from deleted outfits and unsaved try-ons
+    purge_outfit_photos(_conn)
 
 
 # ---------- static files (keep last) ----------

@@ -7,6 +7,12 @@ A small self-hosted closet tracker and outfit recommender. It runs as one Docker
 - **Closet**: add clothes with a photo, category, main and second color, pattern, material, fit, brand, warmth (1–5) and formality (casual / smart casual / formal). Mark things as in the laundry, favorite them, or archive them.
 - **Types**: every piece has a type within its category (shirt, turtleneck, sweater, formal shoes, …). It's guessed from the name, and AI fills it in when it's on.
 - **Suits & blazers**: link a suit jacket to its trousers. Today suggests them together (formal), or the jacket on its own with other trousers (one step less formal). Tick "Only wear them together" if they never go apart.
+- **Classic menswear rules** (Settings → Outfit rules, on by default): belt matches shoes, black shoes with dark suits at formal occasions, nothing too casual for work or with a suit, a tie only with a shirt, one bold pattern and at most two bold colors, fabrics for the season, and sock rules. Today follows them; the AI gets them plus a fuller style guide.
+- **Socks**: a category of their own. Today and the AI add a matching pair (dress socks in the trousers' color for work).
+- **Not for me (👎)**: hide an outfit from Today or the AI results, optionally with a reason. It's never suggested again; the AI learns from the reasons. Restore it under Outfits → Discarded.
+- **Flat lay**: a free picture of an outfit's pieces laid out together (▦ on any outfit).
+- **Your outfit photos**: add photos to logged or saved outfits (📷, or drop a photo on the card), also right after "Wear this".
+- **Try-on** (AI): add a full-body photo in Settings → Try-on, then tap "Try on" on an AI or saved outfit to see yourself wearing it. Medium quality costs roughly 3–6 cents per picture and takes up to a minute. Your photos stay on your server and are only sent to OpenAI when you tap the button.
 - **Outfit rules** (Settings): ground rules that Today and the AI always follow, e.g. "Work: tops only shirt or turtleneck, when colder than 10°", "Work: shoes only formal shoes", "Sweater always over another top". Pieces without a type are left out by "only" rules, and Settings lists them.
 - **Clean photos**: backgrounds are removed on your server when you add a photo (free, no AI or key needed). The original is kept, so "Restore original photo" undoes it. Settings → "Remove background from all photos" cleans up existing ones. Works best on a plain or tidy background.
 - **Add many at once**: for the first setup, tap "Add many" on the Closet tab (or drop several photos on it) and pick up to 50 photos. Each becomes an item; check the names and categories, then "Save". With AI on, every photo is filled in automatically (roughly $0.002 per photo with the default model).
@@ -95,6 +101,7 @@ To back up, copy that folder (ideally with the container stopped: `docker compos
 | `APP_PASSWORD` | empty (no password) | Asks for a password in the browser. `/healthz` stays open for health checks. |
 | `OPENAI_API_KEY` | empty | Optional. Fallback OpenAI key; a key saved in Settings wins. |
 | `AI_MODEL` | `gpt-6.1-terra` | Optional. Fallback model; a model picked in Settings wins. |
+| `TRYON_MODEL` | `gpt-image-2.5-sunburst` | Optional. OpenAI image model used for try-on pictures. |
 | `PORT` | `8080` | Port on the server. Only used by `docker-compose.yml`. Check it's free with `ss -ltn \| grep -w :8080` (no output = free). |
 | `DATA_DIR` | `/data` | Where the database and photos go inside the container. |
 

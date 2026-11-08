@@ -8,22 +8,11 @@ import random
 from datetime import date
 from itertools import product
 
+from . import menswear
 from . import rules as rulebook
-from .kinds import BASE_KINDS, CATEGORIES, LAYER_KINDS
+from .kinds import BASE_KINDS, CATEGORIES, LAYER_KINDS, is_neutral  # noqa: F401
 
-DISPLAY_ORDER = ["outerwear", "suit", "top", "dress", "bottom", "shoes", "accessory"]
-
-NEUTRALS = (
-    "black", "white", "grey", "gray", "charcoal", "navy", "beige", "cream", "ivory",
-    "tan", "khaki", "brown", "camel", "denim", "stone", "taupe", "nude", "oatmeal",
-    "off-white", "off white", "silver",
-)
-
-
-def is_neutral(color) -> bool:
-    c = (color or "").strip().lower()
-    return not c or any(n in c for n in NEUTRALS)
-
+DISPLAY_ORDER = ["outerwear", "suit", "top", "dress", "bottom", "shoes", "socks", "accessory"]
 
 def target_warmth(temp):
     """Ideal warmth (1-5) for base layers at a given feels-like °C."""
@@ -63,11 +52,11 @@ def _item_score(it, target, occasion, on, rainy, formality=None):
     gap = abs((it["formality"] if formality is None else formality) - occasion)
     if gap >= 2:
         return None  # e.g. gym tee at a formal event
-    warmth_weight = 0.6 if it["category"] == "accessory" else 1.2
+    warmth_weight = 0.6 if it["category"] in ("accessory", "socks") else 1.2
     s = -abs(it["warmth"] - target) * warmth_weight - gap * 1.5
 
     # Jackets, shoes and accessories get re-worn daily, so repeats matter less.
-    repeat_weight = 0.3 if it["category"] in ("outerwear", "suit", "shoes", "accessory") else 1.0
+    repeat_weight = 0.3 if it["category"] in ("outerwear", "suit", "shoes", "socks", "accessory") else 1.0
     days = _days_since(it.get("last_worn"), on)
     if days is None:
         s += 0.8 * repeat_weight          # never worn: give it a chance
@@ -171,13 +160,16 @@ def _order(items):
 
 
 def history_key(items):
-    """What makes two outfits 'the same': the clothes, ignoring jackets and accessories that change with the weather."""
-    return frozenset(i["id"] for i in items if i["category"] not in ("outerwear", "accessory"))
+    """What makes two outfits 'the same': the clothes, ignoring coats, socks and accessories."""
+    return frozenset((i["id"] if isinstance(i, dict) else i) for i in items
+                     if not isinstance(i, dict) or i["category"] not in ("outerwear", "socks", "accessory"))
 
 
 def recommend(items, occasion, temp, rainy, on: date, seed, outerwear_below=16.0, count=3,
-              rules=None, history=None):
-    """history: [{"key": frozenset, "rating": int|None, "notes": str}] from logged and saved outfits."""
+              rules=None, history=None, classic=True, discarded=None):
+    """history: [{"key": frozenset, "rating": int|None, "notes": str}] from logged and saved outfits.
+    classic: apply the classic menswear rules. discarded: set of history keys never to suggest."""
+    discarded = discarded or set()
     rng = random.Random(seed)
     active = [i for i in items if not i["archived"] and not i["in_laundry"]]
     by_id = {i["id"]: i for i in active}
@@ -203,7 +195,7 @@ def recommend(items, occasion, temp, rainy, on: date, seed, outerwear_below=16.0
                 scored.append((sc + rng.uniform(0, 1.5), it))  # jitter = variety
         # Drop pieces that are far too warm/cold for the day (t-shirt at 2°C),
         # unless that would leave nothing in the category.
-        if cat != "accessory":
+        if cat not in ("accessory", "socks"):
             suitable = [p for p in scored if abs(p[1]["warmth"] - tgt) < 3]
             scored = suitable or scored
         scored.sort(key=lambda x: x[0], reverse=True)
@@ -220,7 +212,11 @@ def recommend(items, occasion, temp, rainy, on: date, seed, outerwear_below=16.0
         "outerwear": pool("outerwear", o_target, 4),
         "shoes": pool("shoes", base_target, 5),
         "accessory": pool("accessory", base_target, 6),
+        "socks": pool("socks", base_target, 8),
     }
+
+    def fine(its):
+        return not (rules and rulebook.broken(its, rules)) and not (classic and menswear.broken(its, occasion, temp))
 
     # scores of a jacket worn with its own trousers (full formality)
     suit_scores = {}
@@ -258,7 +254,7 @@ def recommend(items, occasion, temp, rainy, on: date, seed, outerwear_below=16.0
     if not bases:
         if not any(i["category"] in ("top", "bottom", "dress") for i in items if not i["archived"]):
             result["message"] = "Add at least one top and one bottom (or a dress) to get suggestions."
-        elif rules:
+        elif rules or classic:
             result["message"] = ("No outfit fits your rules for this occasion and weather. Check Settings → "
                                  "Outfit rules, or the types of your clothes.")
         else:
@@ -302,9 +298,10 @@ def recommend(items, occasion, temp, rainy, on: date, seed, outerwear_below=16.0
                     forms[j] = max(1, jacket["formality"] - 1)
             if bottom is not None and bottom.get("pair_only") and not (jacket and jacket["id"] == bottom.get("match_id")):
                 continue
-            if rules and rulebook.broken(its, rules):
+            key = history_key(its)
+            if key in discarded or not fine(its):
                 continue
-            past = hist.get(history_key(its))
+            past = hist.get(key)
             if past and past.get("rating"):
                 bonus += 0.6 if past["rating"] >= 4 else (-1.2 if past["rating"] <= 2 else 0)
             total = (sum(scores) / len(scores) + _harmony(its) - 0.5 * (max(forms) - min(forms))
@@ -313,7 +310,7 @@ def recommend(items, occasion, temp, rainy, on: date, seed, outerwear_below=16.0
     combos.sort(key=lambda c: c[0], reverse=True)
 
     if not combos:
-        result["message"] = ("No outfit fits your rules for this occasion and weather. Check Settings → "
+        result["message"] = ("No outfit fits your rules (or you discarded the ones that do) for this occasion and weather. Check Settings → "
                              "Outfit rules, or the types of your clothes.")
         return result
 
@@ -333,10 +330,19 @@ def recommend(items, occasion, temp, rainy, on: date, seed, outerwear_below=16.0
             chosen.append({"ids": ids, "key": key_piece(its), "items": its, "score": total,
                            "suited": suited, "past": past})
 
+    for c in chosen:
+        # socks: the best-matching pair that keeps the outfit within the rules (or none)
+        ranked = sorted(pools["socks"], reverse=True,
+                        key=lambda p: p[0] + (menswear.sock_score(p[1], c["items"], occasion, temp) * 2 if classic else 0))
+        for _, sock in ranked:
+            if fine(c["items"] + [sock]):
+                c["items"] = c["items"] + [sock]
+                break
+
     used_acc = set()
     for c in chosen:
         for sc, acc in pools["accessory"]:
-            if acc["id"] not in used_acc and sc > -1 and not (rules and rulebook.broken(c["items"] + [acc], rules)):
+            if acc["id"] not in used_acc and sc > -1 and fine(c["items"] + [acc]):
                 c["items"] = c["items"] + [acc]
                 used_acc.add(acc["id"])
                 break

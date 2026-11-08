@@ -1,7 +1,7 @@
 """Item types within each category (shirt, sweater, formal shoes, ...), and guessing them from names."""
 import re
 
-CATEGORIES = ["top", "bottom", "dress", "suit", "outerwear", "shoes", "accessory"]
+CATEGORIES = ["top", "bottom", "dress", "suit", "outerwear", "shoes", "socks", "accessory"]
 
 KINDS = {
     "top": ["t-shirt", "shirt", "polo", "turtleneck", "blouse", "tank top", "sweater", "cardigan", "sweatshirt", "hoodie"],
@@ -10,6 +10,7 @@ KINDS = {
     "suit": ["suit jacket", "blazer", "waistcoat"],
     "outerwear": ["coat", "jacket", "parka", "raincoat", "overshirt", "gilet"],
     "shoes": ["sneakers", "formal shoes", "loafers", "boots", "sandals"],
+    "socks": ["dress socks", "casual socks", "sport socks", "no-show socks"],
     "accessory": ["belt", "tie", "scarf", "hat", "bag", "watch", "jewelry", "gloves"],
 }
 ALL_KINDS = sorted({k for ks in KINDS.values() for k in ks})
@@ -53,6 +54,10 @@ _GUESS = [
     ("boots", r"boots?"),
     ("sandals", r"sandals?|slides|flip ?flops?"),
     ("formal shoes", r"oxfords?|derbys?|derbies|brogues?|monks?|monk ?straps?|dress shoes?|pumps|heels?"),
+    ("no-show socks", r"no[- ]show|invisible socks?|footies|loafer socks?"),
+    ("sport socks", r"sport socks?|sports socks?|athletic socks?|running socks?|tennis socks?|gym socks?"),
+    ("dress socks", r"dress socks?|business socks?|suit socks?|over[- ]the[- ]calf|otc"),
+    ("casual socks", r"socks?"),
     ("belt", r"belts?"),
     ("tie", r"ties?|neckties?|bow ?ties?"),
     ("scarf", r"scarf|scarves"),
@@ -82,3 +87,15 @@ def clean_kind(kind: str, category: str) -> str:
 def is_tailoring(name: str) -> bool:
     """Blazers and suit jackets filed as outerwear or tops before the suit category existed."""
     return bool(guess_kind(name, "suit"))
+
+
+NEUTRALS = (
+    "black", "white", "grey", "gray", "charcoal", "navy", "beige", "cream", "ivory",
+    "tan", "khaki", "brown", "camel", "denim", "stone", "taupe", "nude", "oatmeal",
+    "off-white", "off white", "silver",
+)
+
+
+def is_neutral(color) -> bool:
+    c = (color or "").strip().lower()
+    return not c or any(n in c for n in NEUTRALS)

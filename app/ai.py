@@ -10,6 +10,7 @@ import os
 
 from PIL import Image
 
+from . import menswear
 from . import rules as rulebook
 from .kinds import ALL_KINDS, CATEGORIES, clean_kind, guess_kind
 
@@ -17,6 +18,7 @@ ENV_KEY = os.environ.get("OPENAI_API_KEY", "")
 ENV_MODEL = os.environ.get("AI_MODEL", "")
 DEFAULT_MODEL = "gpt-6.1-terra"
 MODELS = ["gpt-6.1-terra", "gpt-6-luna", "gpt-6.1-sol"]
+TRYON_MODEL = os.environ.get("TRYON_MODEL", "gpt-image-2.5-sunburst")
 
 PATTERNS = ["solid", "striped", "checked", "floral", "print", "other"]
 FITS = ["slim", "regular", "relaxed"]
@@ -71,6 +73,8 @@ def _friendly(e) -> AIError:
         return AIError("This API key isn't allowed to use that model.")
     if isinstance(e, openai.NotFoundError):
         return AIError(f"OpenAI doesn't know the model “{model()}”. Check the model name in Settings.")
+    if isinstance(e, openai.BadRequestError) and "moderation" in str(e).lower():
+        return AIError("OpenAI's safety filter refused this picture. Try a different photo of yourself.")
     if isinstance(e, openai.RateLimitError):
         return AIError("OpenAI rate limit or quota reached. Try again later.")
     if isinstance(e, openai.APITimeoutError):
@@ -155,8 +159,8 @@ DESCRIBE_SCHEMA = {
 DESCRIBE_INSTRUCTIONS = """You catalog clothes for a personal closet app. Describe the main clothing item shown.
 - is_clothing: false if it isn't a clothing item, shoes or accessory.
 - name: short and specific, 2-5 words, e.g. "Navy oxford shirt", "Black leather Chelsea boots". No brand in the name.
-- category: top (shirts, t-shirts, sweaters, hoodies), bottom (trousers, jeans, shorts, skirts), dress (dresses, jumpsuits), suit (blazers, suit jackets, waistcoats), outerwear (coats, jackets, parkas), shoes, accessory (bags, belts, hats, scarves, ties, jewelry).
-- kind: the type within the category. top: t-shirt, shirt, polo, turtleneck, blouse, tank top, sweater, cardigan, sweatshirt, hoodie. bottom: jeans, chinos, trousers, suit trousers, shorts, skirt, joggers. dress: dress, jumpsuit. suit: suit jacket, blazer, waistcoat. outerwear: coat, jacket, parka, raincoat, overshirt, gilet. shoes: sneakers, formal shoes (oxfords, derbies, brogues, heels), loafers, boots, sandals. accessory: belt, tie, scarf, hat, bag, watch, jewelry, gloves. "" if none fits.
+- category: top (shirts, t-shirts, sweaters, hoodies), bottom (trousers, jeans, shorts, skirts), dress (dresses, jumpsuits), suit (blazers, suit jackets, waistcoats), outerwear (coats, jackets, parkas), shoes, socks, accessory (bags, belts, hats, scarves, ties, jewelry).
+- kind: the type within the category. top: t-shirt, shirt, polo, turtleneck, blouse, tank top, sweater, cardigan, sweatshirt, hoodie. bottom: jeans, chinos, trousers, suit trousers, shorts, skirt, joggers. dress: dress, jumpsuit. suit: suit jacket, blazer, waistcoat. outerwear: coat, jacket, parka, raincoat, overshirt, gilet. shoes: sneakers, formal shoes (oxfords, derbies, brogues, heels), loafers, boots, sandals. socks: dress socks (thin, plain, for work and suits), casual socks, sport socks, no-show socks. accessory: belt, tie, scarf, hat, bag, watch, jewelry, gloves. "" if none fits.
 - color: the main color as one or two plain words, lower case (e.g. "navy", "light blue", "olive").
 - color2: a clearly visible second color (e.g. the stripes or a contrasting trim), lower case, or "" if there isn't one.
 - pattern: solid, striped, checked (incl. plaid, gingham, houndstooth), floral, print (graphic, logo, animal, abstract), or other.
@@ -266,7 +270,7 @@ Rules for every outfit:
 - occasion: what the outfit is for: 1 casual (everyday), 2 smart casual (work), 3 formal (elegant).
 - The user's ground rules are strict: never break them.
 - Learn from the user's past outfits: repeat what they rated highly, avoid what they rated low, and follow their notes (on items and outfits).
-- Add shoes when the closet has any. Outerwear and one accessory are optional.
+- Add shoes when the closet has any, and a pair of socks when the closet has any. Outerwear and one accessory are optional.
 - Keep formality consistent (1 casual, 2 smart casual, 3 formal) and warmth roughly consistent (1 very light .. 5 very warm).
 - Colors: neutrals go with anything; prefer at most one bold accent color per outfit.
 - Patterns: usually at most one patterned piece; pair it with solids.
@@ -303,9 +307,19 @@ def _item_line(it: dict) -> str:
     return json.dumps(slim, ensure_ascii=False)
 
 
+MENSWEAR_GUIDE = """Classic menswear guide (follow it; the user's own rules come first):
+- Proportions: slim with slim or a relaxed piece balanced by a slimmer one; trousers should suit the jacket's cut.
+- Fabric weight: match weights (no linen trousers with a flannel jacket); smooth fabrics are dressier than textured ones.
+- Formality mixes one step at most: blazer with chinos or dark jeans is fine; a suit jacket with jeans is not ideal.
+- A blazer or sport coat is made to be worn separately; a suit jacket looks best with its own trousers.
+- Colors: build on neutrals (navy, grey, white, light blue, brown, beige); one accent color; darker on the bottom for formal looks.
+- Shoes: darker shoes are dressier; brown goes with navy, grey, beige and green; black with charcoal, black and navy for formal.
+- Socks: for work and formal, match the trousers (or else the shoes); patterned socks only as the single playful piece in casual or smart-casual looks."""
+
+
 def build_outfits(items: list, count: int, anchor: dict = None, note: str = "",
                   existing: list = None, style: str = "", rules: list = None, history: list = None,
-                  temp: float = None) -> list:
+                  temp: float = None, classic: bool = True, discarded: list = None) -> list:
     """Ask the AI for outfits. Returns raw [{name, item_ids, occasion, reason}]; the caller validates."""
     parts = ["Closet:", *(_item_line(i) for i in items)]
     known = {i["id"] for i in items}
@@ -323,6 +337,18 @@ def build_outfits(items: list, count: int, anchor: dict = None, note: str = "",
     if past:
         parts.append("\nPast outfits with the user's rating (1-5 stars) and notes:")
         parts.extend(past[:40])
+    if discarded:
+        parts.append("\nOutfits the user rejected (never suggest these combinations; learn from the reasons):")
+        for d in discarded[:40]:
+            entry = {"item_ids": [i for i in d["item_ids"] if i in known]}
+            if d.get("reason"):
+                entry["reason"] = d["reason"][:200]
+            if entry["item_ids"]:
+                parts.append(json.dumps(entry, ensure_ascii=False))
+    if classic:
+        parts.append("\nClassic menswear rules (strict):")
+        parts.extend(f"- {r}" for r in menswear.SUMMARY)
+        parts.append(MENSWEAR_GUIDE)
     if rules:
         parts.append("\nThe user's ground rules (strict):")
         parts.extend(f"- {rulebook.describe(r)}" for r in rules)
@@ -341,3 +367,91 @@ def build_outfits(items: list, count: int, anchor: dict = None, note: str = "",
     data = _call(OUTFITS_INSTRUCTIONS, [{"type": "input_text", "text": "\n".join(parts)}],
                  OUTFITS_SCHEMA, "outfits")
     return data.get("outfits") or []
+
+
+# ---------- try-on: the user wearing an outfit ----------
+
+TRYON_PROMPT = """Create a realistic full-length photo of the person in image 1 wearing exactly the outfit listed below.
+- Keep the person's face, hair, skin tone, body shape and height exactly as in image 1{face_note}.
+- Dress them in these pieces only, true to the reference images: same colors, patterns, fabric texture and cut:
+{pieces}
+- Layer them naturally (shirt under sweater, jacket on top{tuck}). Fit as listed; if not listed, a clean regular fit.
+- Do not add any clothing, logos or accessories that aren't listed.
+- Standing relaxed, facing the camera, whole body visible from head to shoes, plain light-grey studio background, soft even daylight.
+- Photorealistic, like a catalog photo. No text."""
+
+
+def _jpeg(raw: bytes, max_side: int = 1024) -> bytes:
+    img = Image.open(io.BytesIO(raw))
+    if img.mode in ("RGBA", "LA", "P"):
+        rgba = img.convert("RGBA")
+        img = Image.new("RGB", rgba.size, (255, 255, 255))
+        img.paste(rgba, mask=rgba.split()[3])
+    img = img.convert("RGB")
+    img.thumbnail((max_side, max_side))
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=88)
+    return buf.getvalue()
+
+
+def _piece_text(it: dict) -> str:
+    bits = [it.get("kind") or it["category"], it.get("color") or ""]
+    if it.get("color2"):
+        bits.append(f"with {it['color2']}")
+    for k in ("pattern", "material", "fit"):
+        if it.get(k) and it.get(k) != "solid":
+            bits.append(it[k] + (" fit" if k == "fit" else ""))
+    return f"{it['name']} ({', '.join(b for b in bits if b)})"
+
+
+def tryon_prompt(pieces: list, has_face: bool) -> tuple:
+    """pieces: [(item, photo_bytes_or_None)]. Returns (prompt, [(filename, bytes)] of the piece photos)."""
+    first = 3 if has_face else 2
+    lines, files = [], []
+    for it, photo in pieces[:10]:
+        if photo:
+            try:
+                files.append((f"piece{len(files) + 1}.jpg", _jpeg(photo, 768)))
+                lines.append(f"  - {_piece_text(it)}: see image {first + len(files) - 1}")
+                continue
+            except Exception:
+                pass
+        lines.append(f"  - {_piece_text(it)}")
+    tuck = ", shirt tucked in" if any(it.get("kind") == "shirt" for it, _ in pieces) and \
+        any(it["category"] == "suit" for it, _ in pieces) else ""
+    prompt = TRYON_PROMPT.format(face_note=" (image 2 is a close-up of their face: match it)" if has_face else "",
+                                 pieces="\n".join(lines), tuck=tuck)
+    return prompt, files
+
+
+def try_on(body: bytes, face, pieces: list, quality: str = "medium") -> bytes:
+    """Picture of the user wearing the pieces. Returns image bytes."""
+    import openai
+
+    if not enabled():
+        raise AIError("AI is not set up. Add an OpenAI API key in Settings.")
+    try:
+        images = [("person.jpg", _jpeg(body, 1536))]
+        if face:
+            images.append(("face.jpg", _jpeg(face, 1024)))
+    except Exception:
+        raise AIError("Couldn't read your photo. Upload it again in Settings.")
+    prompt, files = tryon_prompt(pieces, bool(face))
+    images += files
+    try:
+        resp = _get_client().with_options(timeout=240).images.edit(
+            model=TRYON_MODEL,
+            image=[(name, data, "image/jpeg") for name, data in images],
+            prompt=prompt,
+            quality=quality,
+            size="1024x1536",
+            input_fidelity="high",
+        )
+    except openai.NotFoundError:
+        raise AIError(f"OpenAI doesn't know the image model “{TRYON_MODEL}”.")
+    except openai.OpenAIError as e:
+        raise _friendly(e)
+    try:
+        return base64.b64decode(resp.data[0].b64_json)
+    except Exception:
+        raise AIError("The AI didn't send a picture back. Try again.")

@@ -154,6 +154,7 @@ def _image(v) -> str:
 
 # Checked in order; whole words only (so "bootcut jeans" isn't shoes, "short sleeve" isn't shorts).
 CATEGORY_WORDS = [
+    ("socks", r"\b(socks?|no-show)\b"),
     ("dress", r"\b(dress|dresses|jumpsuits?|playsuits?|rompers?|gowns?)\b"),
     ("suit", r"\b(blazers?|suit jackets?|sport ?coats?|waistcoats?|sakkos?)\b"),
     ("outerwear", r"\b(jackets?|coats?|topcoats?|overcoats?|raincoats?|parkas?|anoraks?|gilets?|trench|bombers?|puffers?|windbreakers?|overshirts?|shackets?)\b"),

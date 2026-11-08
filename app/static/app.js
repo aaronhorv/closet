@@ -2,14 +2,14 @@
 
 const CATS = [
   ['top', 'Tops', '👕'], ['bottom', 'Bottoms', '👖'], ['dress', 'Dresses', '👗'], ['suit', 'Suits & blazers', '🤵'],
-  ['outerwear', 'Outerwear', '🧥'], ['shoes', 'Shoes', '👟'], ['accessory', 'Accessories', '👜'],
+  ['outerwear', 'Outerwear', '🧥'], ['shoes', 'Shoes', '👟'], ['socks', 'Socks', '🧦'], ['accessory', 'Accessories', '👜'],
 ];
 const CAT_LABEL = Object.fromEntries(CATS.map(([k, l]) => [k, l]));
 const CAT_ICON = Object.fromEntries(CATS.map(([k, , i]) => [k, i]));
-const SINGULAR = { top: 'Top', bottom: 'Bottom', dress: 'Dress / one-piece', suit: 'Suit / blazer', outerwear: 'Outerwear', shoes: 'Shoes', accessory: 'Accessory' };
+const SINGULAR = { top: 'Top', bottom: 'Bottom', dress: 'Dress / one-piece', suit: 'Suit / blazer', outerwear: 'Outerwear', shoes: 'Shoes', socks: 'Socks', accessory: 'Accessory' };
 const OCCASIONS = { 1: 'Casual', 2: 'Smart casual', 3: 'Formal' };
 const WARMTH = ['', 'Very light', 'Light', 'Medium', 'Warm', 'Very warm'];
-const ORDER = ['outerwear', 'suit', 'top', 'dress', 'bottom', 'shoes', 'accessory'];
+const ORDER = ['outerwear', 'suit', 'top', 'dress', 'bottom', 'shoes', 'socks', 'accessory'];
 const kindLabel = (k) => (k ? k[0].toUpperCase() + k.slice(1) : '');
 const TITLES = { today: 'Today', closet: 'Closet', history: 'History', outfits: 'Outfits' };
 
@@ -18,7 +18,7 @@ const state = {
   occasion: 2, day: 0, shuffle: 0,
   filter: 'all', search: '',
   ai: false, aiResults: null, saved: [], history: [],
-  kinds: {}, layerKinds: [],
+  kinds: {}, layerKinds: [], today: [],
 };
 
 const $ = (s, el = document) => el.querySelector(s);
@@ -158,18 +158,22 @@ async function renderToday() {
     $('#go-closet').onclick = () => show('closet');
     return;
   }
+  state.today = res.outfits;
+  box.innerHTML = res.outfits.map((o, i) => todayCard(o, i)).join('');
+}
+
+function todayCard(o, i) {
+  if (o.discarded) return discardedCard(o, 'today', i);
   const done = state.day === 0 ? 'Wear this' : 'Plan this';
-  box.innerHTML = res.outfits.map((o, i) => `
-    <article class="card outfit">
+  return `
+    <article class="card outfit outfit-card" data-kind="today" data-ref="${i}">
+      ${toolsHTML('today', i)}
       <div class="outfit-items">
         ${o.items.map((it) => `<figure>${thumb(it)}<figcaption>${esc(it.name)}</figcaption></figure>`).join('')}
       </div>
       ${o.notes.length ? `<ul class="notes">${o.notes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul>` : ''}
       <button class="btn primary" data-wear="${i}">${done}</button>
-    </article>`).join('');
-  $$('[data-wear]', box).forEach((b) => {
-    b.onclick = () => wear(res.outfits[Number(b.dataset.wear)], b);
-  });
+    </article>`;
 }
 
 function renderWeather(res) {
@@ -201,10 +205,11 @@ function renderWeather(res) {
 async function wear(outfit, btn) {
   btn.disabled = true;
   try {
-    await api('/api/outfits', sendJSON('POST', {
+    const r = await api('/api/outfits', sendJSON('POST', {
       item_ids: outfit.items.map((i) => i.id), worn_on: dayDate(state.day), occasion: state.occasion,
     }));
     btn.textContent = 'Logged ✓';
+    offerPhoto(btn, r.id);
     toast(state.day === 0 ? 'Logged. Rate it later in History.' : 'Planned for tomorrow.');
     await loadItems();
   } catch (e) {
@@ -435,7 +440,7 @@ async function renderHistory() {
   for (const o of outfits) {
     if (o.worn_on !== last) { html += `<div class="day-label">${esc(dayLabel(o.worn_on))}</div>`; last = o.worn_on; }
     html += `
-      <article class="card hist" data-outfit="${o.id}">
+      <article class="card hist" data-outfit="${o.id}" data-kind="history" data-ref="${o.id}">
         <div class="hist-top">
           <div class="stars" aria-label="Rating">${starsHTML(o.rating || 0, 'data-rate')}</div>
           <div><span class="muted small">${esc(OCCASIONS[o.occasion] || '')}</span>
@@ -445,9 +450,12 @@ async function renderHistory() {
         <div class="hist-items">${o.items.map((it) => thumb(it, 'sm')).join('')}</div>
         <div class="hist-names">${o.items.map((it) => esc(it.name)).join(' · ')}</div>
         ${o.notes ? `<div class="hist-note">${esc(o.notes)}</div>` : ''}
+        ${photosHTML(o, 'history', o.id)}
+        ${toolsHTML('history', o.id)}
       </article>`;
   }
   box.innerHTML = html;
+  bindPhotoDrops(box);
 }
 
 // ---------- log outfit ----------
@@ -506,8 +514,10 @@ async function saveLog(e) {
 
 // ---------- OUTFITS (saved + AI) ----------
 function outfitCard(o, idx, kind) {
+  if (o.discarded) return discardedCard(o, kind, idx);
   const head = (o.name || kind === 'saved') ? `
     <div class="outfit-head"><h3>${esc(o.name || 'Outfit')}</h3>
+      ${toolsHTML(kind, idx)}
       ${kind === 'saved' ? `<div><button class="icon-btn" data-edit-saved="${idx}" aria-label="Edit outfit" title="Edit or add a note">✎</button><button class="icon-btn" data-del-saved="${o.id}" aria-label="Delete outfit" title="Delete">✕</button></div>` : ''}</div>` : '';
   const unavailable = o.items.filter((it) => it.in_laundry || it.archived);
   const notes = [kind === 'saved' ? '' : o.reason, unavailable.length ? `Not available now: ${unavailable.map((it) => it.name).join(', ')}` : '']
@@ -515,11 +525,12 @@ function outfitCard(o, idx, kind) {
   const userNote = kind === 'saved' && o.notes ? `<div class="outfit-note">${esc(o.notes)}</div>` : '';
   const save = kind === 'ai' ? `<button class="btn" data-save="${idx}" ${o.saved ? 'disabled' : ''}>${o.saved ? 'Saved ✓' : 'Save'}</button>` : '';
   return `
-    <article class="card outfit">
-      ${head}
+    <article class="card outfit outfit-card" data-kind="${kind}" data-ref="${idx}">
+      ${head || toolsHTML(kind, idx)}
       <div class="outfit-items">
         ${o.items.map((it) => `<figure class="${it.in_laundry || it.archived ? 'dirty' : ''}">${thumb(it)}<figcaption>${esc(it.name)}</figcaption></figure>`).join('')}
       </div>
+      ${photosHTML(o, kind, idx)}
       ${userNote}
       ${notes.length ? `<ul class="notes">${notes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul>` : ''}
       <div class="outfit-actions">${save}<button class="btn primary" data-wear-${kind}="${idx}">Wear this</button></div>
@@ -551,12 +562,14 @@ async function renderSaved() {
     return;
   }
   box.innerHTML = `<div class="section-label">Saved outfits</div>${saved.map((o, i) => outfitCard(o, i, 'saved')).join('')}`;
+  bindPhotoDrops(box);
 }
 
 function renderOutfits() {
   $('#ai-create').hidden = !state.ai;
   renderAIResults();
   renderSaved();
+  renderDiscarded();
 }
 
 async function runAI(body, label) {
@@ -575,11 +588,12 @@ async function wearOutfit(o, btn) {
   btn.disabled = true;
   const forms = o.items.map((i) => i.formality);
   try {
-    await api('/api/outfits', sendJSON('POST', {
+    const r = await api('/api/outfits', sendJSON('POST', {
       item_ids: o.items.map((i) => i.id), worn_on: dayDate(0),
       occasion: o.occasion || Math.round(forms.reduce((a, b) => a + b, 0) / forms.length) || 2,
     }));
     btn.textContent = 'Logged ✓';
+    offerPhoto(btn.closest('.outfit-actions') || btn, r.id);
     toast('Logged. Rate it later in History.');
     await loadItems();
   } catch (e) {
@@ -591,7 +605,10 @@ async function wearOutfit(o, btn) {
 async function saveAIOutfit(o, btn) {
   btn.disabled = true;
   try {
-    await api('/api/saved', sendJSON('POST', { item_ids: o.items.map((i) => i.id), name: o.name, notes: o.reason, occasion: o.occasion }));
+    await api('/api/saved', sendJSON('POST', {
+      item_ids: o.items.map((i) => i.id), name: o.name, notes: o.reason, occasion: o.occasion,
+      photo_ids: (o.photos || []).map((ph) => ph.id),
+    }));
     o.saved = true;
     btn.textContent = 'Saved ✓';
     renderSaved();
@@ -599,6 +616,246 @@ async function saveAIOutfit(o, btn) {
     btn.disabled = false;
     toast(e.message);
   }
+}
+
+// ---------- outfit tools: flat lay, try-on, not for me, photos ----------
+function getOutfit(kind, ref) {
+  if (kind === 'today') return state.today[ref];
+  if (kind === 'ai') return state.aiResults?.outfits?.[ref];
+  if (kind === 'saved') return state.saved[ref];
+  return state.history.find((o) => o.id === ref);
+}
+
+function toolsHTML(kind, ref) {
+  const b = (act, label, cls = '', title = '') => `<button type="button" class="tool-btn ${cls}" data-act="${act}" data-kind="${kind}" data-ref="${ref}" ${title ? `title="${title}" aria-label="${title}"` : ''}>${label}</button>`;
+  const parts = [b('flat', '▦ Flat lay')];
+  if (state.ai && (kind === 'ai' || kind === 'saved')) parts.push(b('tryon', '👤 Try on', 'ai'));
+  if (kind === 'saved' || kind === 'history') parts.push(b('photo', '📷 Photo', '', 'Add your own photo'));
+  if (kind === 'today' || kind === 'ai') parts.push(b('discard', '👎', '', 'Not for me'));
+  return `<div class="card-tools">${parts.join('')}</div>`;
+}
+
+function photosHTML(o, kind, ref) {
+  if (!o.photos?.length) return '';
+  return `<div class="outfit-photos">${o.photos.map((ph) => `<button type="button" class="ph" data-act="view" data-kind="${kind}" data-ref="${ref}" data-photo="${ph.id}" aria-label="${ph.source === 'tryon' ? 'AI try-on picture' : 'Your photo'}">
+    <img src="${esc(ph.url)}" alt="" loading="lazy">${ph.source === 'tryon' ? '<span class="badge">AI</span>' : ''}</button>`).join('')}</div>`;
+}
+
+function cardEl(kind, ref) { return $(`.outfit-card[data-kind="${kind}"][data-ref="${ref}"]`); }
+
+function rerenderCard(kind, ref) {
+  if (kind === 'history') { renderHistory(); return; }
+  const el = cardEl(kind, ref);
+  const o = getOutfit(kind, ref);
+  if (!el || !o) return;
+  el.outerHTML = kind === 'today' ? todayCard(o, ref) : outfitCard(o, ref, kind);
+  if (kind === 'saved') bindPhotoDrops($('#saved-list'));
+}
+
+// flat lay: the pieces laid out like a magazine photo (free, made in the browser)
+const FLAT_SPOTS = {
+  top: [30, 4, 40, 36], layer: [50, 10, 38, 34], dress: [28, 4, 44, 62], suit: [4, 6, 38, 40],
+  outerwear: [58, 3, 38, 42], bottom: [30, 40, 40, 44], shoes: [60, 76, 32, 20], socks: [8, 78, 22, 18],
+};
+function flatLayHTML(items) {
+  const tops = items.filter((i) => i.category === 'top');
+  const acc = items.filter((i) => i.category === 'accessory');
+  const outer = items.some((i) => i.category === 'outerwear');
+  const pieces = items.filter((i) => i.category !== 'accessory').map((it) => {
+    let spot = FLAT_SPOTS[it.category] || FLAT_SPOTS.top;
+    if (it.category === 'top' && tops.length > 1 && it === tops[1]) spot = FLAT_SPOTS.layer;
+    if (it.category === 'outerwear' && !items.some((i) => i.category === 'suit')) spot = [4, 3, 38, 42];
+    if (it.category === 'suit' && outer) spot = [4, 6, 38, 40];
+    return [it, spot];
+  });
+  acc.forEach((it, n) => pieces.push([it, [76, 46 + n * 15, 20, 14]]));
+  const html = pieces.map(([it, [l, t, w, h]]) => {
+    const pos = `left:${l}%;top:${t}%;width:${w}%;height:${h}%`;
+    if (it.photo_url) return `<div class="fl" style="${pos}"><img src="${esc(it.photo_url)}" alt="${esc(it.name)}"></div>`;
+    const c = cssColor(it.color);
+    return `<div class="fl sw" style="${pos};${c ? `--sw:${c}` : ''}" title="${esc(it.name)}">${CAT_ICON[it.category] || '•'}</div>`;
+  }).join('');
+  return `<div class="flatlay">${html}</div><div class="flatlay-names">${items.map((i) => esc(i.name)).join(' · ')}</div>`;
+}
+
+let viewerCtx = null;
+function openViewer(title, body, foot = '') {
+  $('#viewer-title').textContent = title;
+  $('#viewer-body').innerHTML = body;
+  $('#viewer-foot').innerHTML = foot;
+  if (!$('#viewer').open) $('#viewer').showModal();
+}
+
+function openFlatLay(o) {
+  viewerCtx = null;
+  const missing = o.items.filter((i) => !i.photo_url).length;
+  openViewer(o.name || 'Flat lay', flatLayHTML(o.items)
+    + (missing ? `<div class="viewer-note">${missing} piece${missing > 1 ? 's have' : ' has'} no photo, so ${missing > 1 ? 'they show' : 'it shows'} as a color block.</div>` : ''));
+}
+
+function openPhoto(o, kind, ref, photoId) {
+  const ph = (o.photos || []).find((x) => x.id === photoId);
+  if (!ph) return;
+  viewerCtx = { o, kind, ref, ph };
+  const foot = [];
+  if (ph.source === 'own' && state.cutout) {
+    foot.push(ph.has_original
+      ? '<button type="button" class="btn ghost" data-vact="restore">Restore original</button>'
+      : '<button type="button" class="btn" data-vact="cutout">Remove background</button>');
+  }
+  foot.push('<button type="button" class="btn danger-ghost" data-vact="delete">Delete</button>');
+  const note = ph.source === 'tryon'
+    ? '<div class="viewer-note">AI picture: good for judging colors and proportions. The fit and small details can differ from real life.</div>' : '';
+  openViewer(ph.source === 'tryon' ? 'Try-on' : 'Your photo', `<img src="${esc(ph.url)}" alt="">${note}`, `<span></span><div class="dlg-foot-left">${foot.join('')}</div>`);
+}
+
+async function viewerAction(act, btn) {
+  const { o, kind, ref, ph } = viewerCtx || {};
+  if (!ph) return;
+  if (act === 'delete') {
+    if (!confirm('Delete this picture?')) return;
+    try {
+      await api(`/api/outfit-photos/${ph.id}`, { method: 'DELETE' });
+      o.photos = o.photos.filter((x) => x.id !== ph.id);
+      $('#viewer').close();
+      rerenderCard(kind, ref);
+      toast('Deleted');
+    } catch (e) { toast(e.message); }
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = act === 'cutout' ? 'Removing background…' : 'Restoring…';
+  try {
+    const np = await api(`/api/outfit-photos/${ph.id}/${act === 'cutout' ? 'cutout' : 'restore'}`, { method: 'POST' });
+    Object.assign(ph, np);
+    rerenderCard(kind, ref);
+    openPhoto(o, kind, ref, ph.id);
+  } catch (e) {
+    toast(e.message);
+    btn.disabled = false;
+  }
+}
+
+async function tryOn(o, kind, ref, btn) {
+  if (!state.settings.tryon_body_url) {
+    toast('Add a full-body photo of yourself in Settings → Try-on first.');
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = 'Creating… up to a minute';
+  try {
+    const ph = await api('/api/tryon', sendJSON('POST', {
+      item_ids: o.items.map((i) => i.id), saved_id: kind === 'saved' ? o.id : null,
+    }));
+    o.photos = [...(o.photos || []), ph];
+    rerenderCard(kind, ref);
+    openPhoto(o, kind, ref, ph.id);
+  } catch (e) {
+    toast(e.message);
+    btn.disabled = false;
+    btn.textContent = '👤 Try on';
+  }
+}
+
+function discardedCard(o, kind, ref) {
+  return `<article class="card discarded-card outfit-card" data-kind="${kind}" data-ref="${ref}">
+      <div><strong>Not for me.</strong> <span class="muted">This combination won't be suggested again.</span></div>
+      <div class="inline"><input data-reason maxlength="300" placeholder="Why not? (optional) e.g. colors clash" value="${esc(o.discarded.reason || '')}">
+        <button type="button" class="btn" data-act="reason" data-kind="${kind}" data-ref="${ref}">Save</button></div>
+      <button type="button" class="tool-btn" data-act="undo" data-kind="${kind}" data-ref="${ref}">Undo</button>
+    </article>`;
+}
+
+async function discard(o, kind, ref) {
+  try {
+    const r = await api('/api/discarded', sendJSON('POST', { item_ids: o.items.map((i) => i.id) }));
+    o.discarded = { id: r.id, reason: '' };
+    rerenderCard(kind, ref);
+    cardEl(kind, ref)?.querySelector('[data-reason]')?.focus();
+    $('#outfits-tab').hidden = false;
+  } catch (e) { toast(e.message); }
+}
+
+async function saveReason(o, kind, ref) {
+  const reason = cardEl(kind, ref).querySelector('[data-reason]').value;
+  try {
+    await api(`/api/discarded/${o.discarded.id}`, sendJSON('PATCH', { reason }));
+    o.discarded.reason = reason;
+    toast(state.ai ? 'Noted. The AI will take it into account.' : 'Noted');
+  } catch (e) { toast(e.message); }
+}
+
+async function undoDiscard(o, kind, ref) {
+  try {
+    await api(`/api/discarded/${o.discarded.id}`, { method: 'DELETE' });
+    o.discarded = null;
+    rerenderCard(kind, ref);
+  } catch (e) { toast(e.message); }
+}
+
+async function renderDiscarded() {
+  const box = $('#discarded-box');
+  let list;
+  try { list = await api('/api/discarded'); } catch { return; }
+  box.hidden = !list.length;
+  $('#discarded-count').textContent = list.length ? `(${list.length})` : '';
+  $('#discarded-list').innerHTML = list.map((d) => `<div class="discarded-row">
+      <div class="thumbs">${d.items.map((it) => thumb(it, 'sm')).join('')}</div>
+      <button type="button" class="btn" data-restore="${d.id}">Restore</button>
+      <div class="reason">${esc(d.items.map((i) => i.name).join(' · '))}${d.reason ? ` · “${esc(d.reason)}”` : ''}</div>
+    </div>`).join('');
+}
+
+// your own outfit photos
+let photoTarget = null;
+function pickOutfitPhoto(kind, id) {
+  photoTarget = { kind, id };
+  $('#outfit-photo-input').click();
+}
+async function uploadOutfitPhoto(kind, id, file) {
+  const fd = new FormData();
+  fd.append('photo', await shrinkPhoto(file, 1600), 'photo.jpg');
+  toast('Uploading photo…');
+  try {
+    await api(kind === 'saved' ? `/api/saved/${id}/photos` : `/api/outfits/${id}/photos`, { method: 'POST', body: fd });
+    toast(kind === 'new' ? 'Photo added. You’ll find it in History.' : 'Photo added');
+    if (kind === 'saved') renderSaved();
+    else if (state.view === 'history') renderHistory();
+  } catch (e) { toast(e.message); }
+}
+function bindPhotoDrops(root) {
+  $$('[data-kind="saved"].outfit-card, .hist[data-kind="history"]', root).forEach((el) => {
+    if (el.dataset.dropBound) return;
+    el.dataset.dropBound = '1';
+    const kind = el.dataset.kind;
+    dropTarget(el, (files) => {
+      const o = getOutfit(kind, Number(el.dataset.ref));
+      if (o) uploadOutfitPhoto(kind, o.id, files[0]);
+    });
+  });
+}
+function offerPhoto(after, outfitId) {
+  const wrap = document.createElement('div');
+  wrap.className = 'after-wear';
+  wrap.innerHTML = `<button type="button" class="tool-btn" data-act="photo-new" data-outfit-id="${outfitId}">📷 Add a photo of it</button>`;
+  after.insertAdjacentElement('afterend', wrap);
+}
+
+async function onOutfitTool(e) {
+  const el = e.target.closest('[data-act]');
+  if (!el) return;
+  const { act, kind } = el.dataset;
+  if (act === 'photo-new') { pickOutfitPhoto('new', Number(el.dataset.outfitId)); return; }
+  const ref = Number(el.dataset.ref);
+  const o = getOutfit(kind, ref);
+  if (!o) return;
+  if (act === 'flat') openFlatLay(o);
+  else if (act === 'tryon') tryOn(o, kind, ref, el);
+  else if (act === 'discard') discard(o, kind, ref);
+  else if (act === 'reason') saveReason(o, kind, ref);
+  else if (act === 'undo') undoDiscard(o, kind, ref);
+  else if (act === 'photo') pickOutfitPhoto(kind, o.id);
+  else if (act === 'view') openPhoto(o, kind, ref, Number(el.dataset.photo));
 }
 
 // ---------- filling the item form (AI / shop link) ----------
@@ -1248,6 +1505,25 @@ async function addRule() {
   }
 }
 
+function renderTryonPhotos() {
+  ['body', 'face'].forEach((which) => {
+    const url = state.settings[`tryon_${which}_url`];
+    const el = $(`#tryon-${which}-preview`);
+    el.classList.toggle('has', !!url);
+    el.innerHTML = url ? `<img src="${esc(url)}" alt="">` : `<span>${which === 'body' ? 'Full-body photo<br><small>tap or drop</small>' : 'Face close-up (optional)'}</span>`;
+    $(`[data-remove-tryon="${which}"]`).hidden = !url;
+  });
+}
+async function uploadTryon(which, file) {
+  const fd = new FormData();
+  fd.append('photo', await shrinkPhoto(file, 1600), 'photo.jpg');
+  try {
+    state.settings = await api(`/api/tryon/photo/${which}`, { method: 'POST', body: fd });
+    renderTryonPhotos();
+    toast('Photo saved');
+  } catch (e) { toast(e.message); }
+}
+
 // ---------- SETTINGS ----------
 let pendingLoc = null;
 
@@ -1272,6 +1548,10 @@ function openSettings() {
   $('#rule-add').open = false;
   setupRuleBuilder();
   renderRules();
+  $('#menswear-toggle').checked = s.menswear !== false;
+  $('#menswear-rules').innerHTML = (s.menswear_rules || []).map((r) => `<li>${esc(r)}</li>`).join('');
+  f.tryon_quality.value = s.tryon_quality || 'medium';
+  renderTryonPhotos();
   $('#test-result').textContent = '';
   $('#settings-dialog').showModal();
 }
@@ -1300,7 +1580,8 @@ async function saveSettings(e) {
   const shown = Number(f.outerwear_below.value);
   // convert the threshold using the unit it was typed in
   const c = unit === 'F' ? (shown - 32) * 5 / 9 : shown;
-  const body = { unit, outerwear_below: Math.round(c * 10) / 10, ai_prompt: f.ai_prompt.value, ai_model: f.ai_model.value };
+  const body = { unit, outerwear_below: Math.round(c * 10) / 10, ai_prompt: f.ai_prompt.value, ai_model: f.ai_model.value,
+    tryon_quality: f.tryon_quality.value };
   if (f.openai_key.value.trim()) body.openai_key = f.openai_key.value.trim();
   else if (removeKey) body.openai_key = '';
   if (pendingLoc) Object.assign(body, { location_name: pendingLoc.label, lat: pendingLoc.lat, lon: pendingLoc.lon });
@@ -1349,7 +1630,7 @@ async function loadConfig() {
   state.cutout = cfg.cutout_enabled;
   state.kinds = cfg.kinds || {};
   state.layerKinds = cfg.layer_kinds || [];
-  $('#outfits-tab').hidden = !(cfg.ai_enabled || cfg.saved_count);
+  $('#outfits-tab').hidden = !(cfg.ai_enabled || cfg.saved_count || cfg.discarded_count);
 }
 async function loadItems() { state.items = await api('/api/items?include_archived=true'); }
 
@@ -1366,6 +1647,10 @@ function init() {
   bindSeg($('#occasion-seg'), (v) => { state.occasion = Number(v); state.shuffle = 0; renderToday(); });
   bindSeg($('#day-seg'), (v) => { state.day = Number(v); state.shuffle = 0; renderToday(); });
   $('#shuffle-btn').onclick = () => { state.shuffle += 1; renderToday(); };
+  $('#suggestions').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-wear]');
+    if (b && !b.disabled) wear(state.today[Number(b.dataset.wear)], b);
+  });
 
   $('#search').addEventListener('input', (e) => { state.search = e.target.value; renderCloset(); });
   $('#add-item-btn').onclick = () => openItem();
@@ -1523,6 +1808,46 @@ function init() {
     updateRulePreview();
   });
   $('#rule-add-btn').onclick = addRule;
+  $('#menswear-toggle').addEventListener('change', async (e) => {
+    try {
+      state.settings = await api('/api/settings', sendJSON('PUT', { menswear: e.target.checked }));
+      toast(e.target.checked ? 'Classic menswear rules on' : 'Classic menswear rules off');
+      if (state.view === 'today') renderToday();
+    } catch (err) { toast(err.message); }
+  });
+  $$('[data-tryon]').forEach((input) => {
+    input.addEventListener('change', () => { if (input.files[0]) uploadTryon(input.dataset.tryon, input.files[0]); input.value = ''; });
+    dropTarget(input.nextElementSibling, (files) => uploadTryon(input.dataset.tryon, files[0]));
+  });
+  $$('[data-remove-tryon]').forEach((b) => {
+    b.onclick = async () => {
+      try {
+        state.settings = await api(`/api/tryon/photo/${b.dataset.removeTryon}`, { method: 'DELETE' });
+        renderTryonPhotos();
+        toast('Photo removed');
+      } catch (e) { toast(e.message); }
+    };
+  });
+  // outfit tools and the viewer
+  document.addEventListener('click', onOutfitTool);
+  $('#viewer-foot').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-vact]');
+    if (b) viewerAction(b.dataset.vact, b);
+  });
+  $('#outfit-photo-input').addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (file && photoTarget) uploadOutfitPhoto(photoTarget.kind, photoTarget.id, file);
+  });
+  $('#discarded-list').addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-restore]');
+    if (!b) return;
+    try {
+      await api(`/api/discarded/${b.dataset.restore}`, { method: 'DELETE' });
+      toast('Restored. It can be suggested again.');
+      renderDiscarded();
+    } catch (err) { toast(err.message); }
+  });
   $('#rules-list').addEventListener('click', (e) => {
     const b = e.target.closest('[data-del-rule]');
     if (!b) return;

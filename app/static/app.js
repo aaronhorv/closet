@@ -1955,8 +1955,23 @@ async function testKey() {
 }
 
 // ---------- data ----------
+const PAGE_VERSION = document.querySelector('meta[name="app-version"]')?.content || '';
+
+// After an update the server has a newer version: load it (once), instead of running old code.
+function reloadIfOutdated(serverVersion) {
+  if (!serverVersion || !PAGE_VERSION || serverVersion === PAGE_VERSION) return false;
+  let tried = '';
+  try { tried = sessionStorage.getItem('reloaded-for') || ''; } catch { /* private mode */ }
+  if (tried === serverVersion) return false;
+  try { sessionStorage.setItem('reloaded-for', serverVersion); } catch { /* ignore */ }
+  window.location.reload();
+  return true;
+}
+
 async function loadConfig() {
   const cfg = await api('/api/config');
+  if (reloadIfOutdated(cfg.version)) return;
+  $('#app-version').textContent = `App version ${cfg.version || PAGE_VERSION || '?'}`;
   state.ai = cfg.ai_enabled;
   state.cutout = cfg.cutout_enabled;
   state.kinds = cfg.kinds || {};
@@ -2228,6 +2243,12 @@ function init() {
 // iOS ignores user-scalable=no; block pinch and double-tap zoom so the app keeps its layout
 ['gesturestart', 'gesturechange'].forEach((t) => document.addEventListener(t, (e) => e.preventDefault()));
 document.addEventListener('touchmove', (e) => { if (e.scale !== undefined && e.scale !== 1) e.preventDefault(); }, { passive: false });
+
+// a home-screen app can sit in the background for days: check for an update when it comes back
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState !== 'visible') return;
+  try { reloadIfOutdated((await api('/api/config')).version); } catch { /* offline: keep going */ }
+});
 
 (async function start() {
   init();

@@ -1,5 +1,6 @@
 """Closet tracker + outfit recommender: API and static web UI."""
 import base64
+import hashlib
 import io
 import json
 import mimetypes
@@ -12,7 +13,7 @@ from datetime import date
 from typing import List, Optional
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps
 from pydantic import BaseModel
@@ -1361,7 +1362,7 @@ def config():
         saved = conn.execute("SELECT COUNT(*) FROM saved_outfits WHERE status = 'kept'").fetchone()[0]
         thrown = conn.execute("SELECT COUNT(*) FROM saved_outfits WHERE status = 'rejected'").fetchone()[0]
         ideas = conn.execute("SELECT COUNT(*) FROM saved_outfits WHERE status = 'idea'").fetchone()[0]
-    return {"ai_enabled": ai.enabled(), "ai_model": ai.model(), "saved_count": saved, "discarded_count": thrown, "idea_count": ideas,
+    return {"ai_enabled": ai.enabled(), "ai_model": ai.model(), "saved_count": saved, "discarded_count": thrown, "idea_count": ideas, "version": APP_VERSION,
             "cutout_enabled": cutout.available(), "kinds": kinds.KINDS,
             "layer_kinds": sorted(kinds.LAYER_KINDS), "base_kinds": sorted(kinds.BASE_KINDS)}
 
@@ -1631,6 +1632,30 @@ def geocode(q: str):
 
 with db() as _conn:  # leftovers from deleted outfits and unsaved try-ons
     purge_outfit_photos(_conn)
+
+
+# ---------- the page itself: asset links carry the version, so phones never run old code ----------
+
+def _asset_version() -> str:
+    h = hashlib.sha1()
+    for name in ("index.html", "app.js", "style.css"):
+        with open(os.path.join(STATIC_DIR, name), "rb") as fh:
+            h.update(fh.read())
+    return h.hexdigest()[:8]
+
+
+APP_VERSION = _asset_version()
+
+
+@app.get("/", include_in_schema=False)
+@app.get("/index.html", include_in_schema=False)
+def index_page():
+    with open(os.path.join(STATIC_DIR, "index.html"), encoding="utf-8") as fh:
+        html = fh.read()
+    html = (html.replace('href="/style.css"', f'href="/style.css?v={APP_VERSION}"')
+                .replace('src="/app.js"', f'src="/app.js?v={APP_VERSION}"')
+                .replace("<head>", f'<head>\n  <meta name="app-version" content="{APP_VERSION}">', 1))
+    return HTMLResponse(html)
 
 
 # ---------- static files (keep last) ----------

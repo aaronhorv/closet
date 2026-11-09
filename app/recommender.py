@@ -213,8 +213,8 @@ def recommend(items, occasion, temp, rainy, on: date, seed, outerwear_below=16.0
         "suit": pool("suit", base_target, 4, formality_of=lambda it: max(1, it["formality"] - 1)) if can_blazer else [],
         "outerwear": pool("outerwear", o_target, 4),
         "shoes": pool("shoes", base_target, 5),
-        "accessory": pool("accessory", base_target, 6),
-        "socks": pool("socks", base_target, 8),
+        "accessory": pool("accessory", base_target, 30),
+        "socks": pool("socks", base_target, 30),
     }
 
     def fine(its):
@@ -251,16 +251,37 @@ def recommend(items, occasion, temp, rainy, on: date, seed, outerwear_below=16.0
     def key_piece(its):
         return next((i["id"] for i in its if i["category"] in ("top", "dress")), its[0]["id"])
 
-    def add_socks(its):
-        """The best-matching pair of socks that keeps the outfit within the rules (or none)."""
-        if any(i["category"] == "socks" for i in its):
-            return its
-        ranked = sorted(pools["socks"], reverse=True,
-                        key=lambda p: p[0] + (menswear.sock_score(p[1], its, occasion, temp) * 2 if classic else 0))
-        for _, sock in ranked:
-            if fine(its + [sock]):
-                return its + [sock]
-        return its
+    used_extras = set()
+
+    def add_extras(its, weather_only=False):
+        """Socks and accessories only when they genuinely add something (plain basics are assumed).
+        Returns (items, notes)."""
+        notes = []
+        if not weather_only and not any(i["category"] == "socks" for i in its):
+            cands = [(menswear.extra_value(s, its, occasion, temp), s) for _, s in pools["socks"]]
+            for (score, note), sock in sorted(((v, s) for v, s in cands if v), key=lambda x: -x[0][0]):
+                if sock["id"] not in used_extras and fine(its + [sock]):
+                    its = its + [sock]
+                    used_extras.add(sock["id"])
+                    notes.append(note)
+                    break
+        have_kinds = {i.get("kind") for i in its if i["category"] == "accessory"}
+        cands = [(menswear.extra_value(a, its, occasion, temp), a) for _, a in pools["accessory"]]
+        added = 0
+        for (score, note), acc in sorted(((v, a) for v, a in cands if v), key=lambda x: -x[0][0]):
+            kind = acc.get("kind") or ""
+            if added >= 2 or kind in have_kinds:
+                continue
+            weather = kind in menswear.WEATHER_EXTRAS
+            if (weather_only and not weather) or (acc["id"] in used_extras and not weather):
+                continue
+            if fine(its + [acc]):
+                its = its + [acc]
+                have_kinds.add(kind)
+                used_extras.add(acc["id"])
+                notes.append(note)
+                added += 1
+        return its, notes
 
     # ---- 1. your own outfits that suit today ----
     mine = []
@@ -304,7 +325,8 @@ def recommend(items, occasion, temp, rainy, on: date, seed, outerwear_below=16.0
                         its = its + [coat]
                         notes.append(f"Added the {coat['name']} for the weather.")
                         break
-            its = add_socks(its)
+            its, extra_notes = add_extras(its, weather_only=True)
+            notes = notes + extra_notes
             mine.append({"key": key_piece(its), "items": its, "score": total, "lo": lo, "notes": notes})
 
     def mine_out(m):
@@ -406,24 +428,14 @@ def recommend(items, occasion, temp, rainy, on: date, seed, outerwear_below=16.0
                            "suited": suited, "past": past})
 
     for c in chosen:
-        c["items"] = add_socks(c["items"])
-
-    used_acc = set()
-    for c in chosen:
-        # a jacket outfit gets its pocket square first, if one fits
-        jacketed = any(i["category"] == "suit" for i in c["items"])
-        accs = sorted(pools["accessory"], key=lambda p: (not (jacketed and p[1].get("kind") == "pocket square"), -p[0]))
-        for sc, acc in accs:
-            if acc["id"] not in used_acc and sc > -1 and fine(c["items"] + [acc]):
-                c["items"] = c["items"] + [acc]
-                used_acc.add(acc["id"])
-                break
+        c["items"], c["extra_notes"] = add_extras(c["items"])
 
     out = [mine_out(m) for m in mine]
     for c in chosen:
         notes = _notes(c["items"], on)
         if c["suited"]:
             notes.insert(0, f"Worn as a suit: {c['suited'][0]['name']} with {c['suited'][1]['name']}.")
+        notes += c["extra_notes"]
         past = c["past"]
         if past:
             if past.get("notes"):

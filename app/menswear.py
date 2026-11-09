@@ -25,7 +25,8 @@ SUMMARY = [
     "At most one bold pattern per outfit (patterned socks count).",
     "At most two bold colors per outfit; neutrals (navy, grey, white, beige, brown...) don't count.",
     "Fabrics for the season: no linen when it's cold, no flannel, tweed or heavy wool when it's hot.",
-    "Socks: dress socks matching the trousers (or else the shoes) for work and formal; never sport or white socks with formal shoes or a suit; no-show socks only with loafers or sneakers; no loud socks at formal occasions.",
+    "Socks: plain socks matching the trousers are a given; patterned or colorful socks only as the single playful piece (never at formal occasions); never sport or white socks with formal shoes or a suit; no-show socks only with loafers or sneakers.",
+    "Accessories only when they add something: pocket square with a jacket, tie with a shirt for formal looks, scarf and gloves in the cold; a basic belt and watch are a given.",
 ]
 
 
@@ -154,3 +155,65 @@ def sock_score(sock, items, occasion, temp) -> float:
     if k == "sport socks" and any(s.get("kind") == "sneakers" for s in shoes) and occasion == 1:
         score += 0.8
     return score
+
+
+# ---------- extras: socks and accessories are only added when they add something ----------
+# Plain neutral socks and basic accessories (a belt matching the shoes, a plain watch) are assumed;
+# the catalogued ones are statement pieces.
+WEATHER_EXTRAS = {"scarf", "gloves", "hat"}
+
+
+def statement_count(items) -> int:
+    """Patterned pieces plus bold colors in the outfit (accessories and socks don't count)."""
+    clothes = [i for i in items if i["category"] not in ("accessory", "socks")]
+    return sum(1 for i in clothes if is_patterned(i)) + len(bold_colors([i for i in clothes if not is_patterned(i)]))
+
+
+def _echo(piece, items):
+    """A bold color of the piece that already appears elsewhere in the outfit."""
+    mine = [c for c in (_c(piece), (piece.get("color2") or "").strip().lower()) if c and not is_neutral(c)]
+    others = {c for i in items for c in (_c(i), (i.get("color2") or "").strip().lower()) if c}
+    return next((c for c in mine if any(c in o or o in c for o in others)), None)
+
+
+def extra_value(piece, items, occasion, temp):
+    """(score, note) when this sock or accessory genuinely improves the outfit, else None."""
+    kind = piece.get("kind") or ""
+    name = piece["name"]
+    statement = is_patterned(piece) or bool(bold_colors([piece]))
+    has_jacket = any(i["category"] == "suit" for i in items)
+    has_coat = any(i["category"] == "outerwear" for i in items)
+    kinds = {i.get("kind") or "" for i in items}
+
+    if piece["category"] == "socks":
+        if occasion == 3 or not statement:
+            return None  # plain socks are a given; formal looks keep them plain
+        echo = _echo(piece, items)
+        if echo:
+            return 2.5, f"The {name} pick up the {echo}."
+        if statement_count(items) == 0:
+            return 2.0, f"The {name} add the one playful touch to a calm outfit."
+        return None
+
+    if kind == "pocket square":
+        return (3.0, f"Finish the jacket with the {name}.") if has_jacket else None
+    if kind == "tie":
+        if "shirt" in kinds and (occasion == 3 or suited_pair(items)):
+            return 2.5, f"Add the {name}."
+        return None
+    if kind in WEATHER_EXTRAS:
+        if temp is None or not has_coat:
+            return None
+        if kind == "scarf" and temp < 8:
+            return 2.0, f"Take the {name}: it's cold."
+        if kind in ("gloves", "hat") and temp < 3 and not (kind == "hat" and occasion == 3):
+            return 1.5, f"Take the {name}: it's freezing."
+        return None
+    # belt, watch, bag, jewelry: the plain versions are assumed; only a statement piece with room for it
+    if statement and occasion < 3:
+        echo = _echo(piece, items)
+        if echo:
+            return 1.5, f"The {name} picks up the {echo}."
+        if statement_count(items) == 0:
+            return 1.5, f"The {name} adds some interest to a calm outfit."
+    return None

@@ -170,9 +170,9 @@ function todayCard(o, i) {
   const head = mine
     ? `<div class="outfit-head"><div><div class="card-label">From your outfits</div><h3>${esc(o.name || 'Outfit')}</h3>
         <div class="muted small">${esc(statsLine(o))}</div></div>${flat}</div>`
-    : `<div class="outfit-head"><div class="card-label idea">${o.kept ? 'New idea · kept ✓' : 'New idea'}</div>${flat}</div>`;
+    : `<div class="outfit-head"><div class="card-label idea">${o.kept ? 'New idea · saved ✓' : 'New idea'}</div>${flat}</div>`;
   const decide = !mine && !o.kept
-    ? `${tool('reject', '👎', 'today', i, '', 'Not for me')}<button type="button" class="btn" data-act="keep" data-kind="today" data-ref="${i}">👍 Keep</button>`
+    ? `${tool('reject', '👎', 'today', i, '', 'Not for me')}<button type="button" class="btn" data-act="keep" data-kind="today" data-ref="${i}" title="Save to My outfits without wearing it">Save</button>`
     : '';
   return `
     <article class="card outfit outfit-card" data-kind="today" data-ref="${i}">
@@ -708,7 +708,7 @@ function libCard(o, mode) {
   if (mode !== 'review') tools.push(tool('delete', '🗑', k, ref, '', 'Delete'));
   let actions;
   if (mode === 'review') {
-    actions = `${tool('reject', '👎 Not for me', k, ref)}${tool('later', 'Later', k, ref)}<button type="button" class="btn primary" data-act="keep" data-kind="${k}" data-ref="${ref}">👍 Keep</button>`;
+    actions = `${tool('reject', '👎 Not for me', k, ref)}${tool('later', 'Later', k, ref)}<button type="button" class="btn primary" data-act="keep" data-kind="${k}" data-ref="${ref}">👍 Save</button>`;
   } else if (mode === 'kept') {
     actions = `<button type="button" class="btn primary" data-act="wear" data-kind="${k}" data-ref="${ref}">Wear this</button>`;
   } else {
@@ -755,7 +755,7 @@ function renderOutfits() {
     }
     libView.reviewHold = null;
     if (!ideas.length) {
-      box.innerHTML = `<div class="card empty">Nothing to review. ${state.ai ? 'Create outfits with AI above, or' : 'Tap'} 👍 Keep on Today's new ideas.</div>`;
+      box.innerHTML = `<div class="card empty">Nothing to review. ${state.ai ? 'Create outfits with AI above, or tap' : 'Tap'} Save on Today's new ideas.</div>`;
       return;
     }
     box.innerHTML = `<div class="review-count">1 of ${ideas.length} to review</div>${libCard(ideas[0], 'review')}`;
@@ -1130,7 +1130,7 @@ async function onOutfitTool(e) {
     } catch (err) { toast(err.message); }
   } else if (act === 'keep') {
     if (kind === 'today') keepToday(o, ref);
-    else if (await libPatch(o, { status: 'kept' }, 'Kept. It’s in My outfits now.')) renderOutfits();
+    else if (await libPatch(o, { status: 'kept' }, 'Saved to My outfits.')) renderOutfits();
   } else if (act === 'later') {
     if (await libPatch(o, { later: true })) { await loadLibrary(); renderOutfits(); }
   } else if (act === 'reject') {
@@ -1166,7 +1166,7 @@ async function keepToday(o, ref) {
     o.kept = true;
     o.library_id = r.id;
     rerenderCard('today', ref);
-    toast('Kept. It’s in My outfits now.');
+    toast('Saved to My outfits. Wear it whenever you like.');
     loadLibrary();
   } catch (e) { toast(e.message); }
 }
@@ -2258,5 +2258,5 @@ document.addEventListener('visibilitychange', async () => {
   } catch (e) {
     toast(`Couldn't reach the server: ${e.message}`);
   }
-  show('today');
+  show(state.view); // stay where the user already tapped while loading
 }());

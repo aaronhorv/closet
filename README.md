@@ -22,7 +22,7 @@ A small self-hosted closet tracker and outfit recommender. It runs as one Docker
 - **Drag and drop**: drop a photo onto the photo box in "Add item", or paste a copied image with Ctrl+V.
 - **Brand picker**: start typing and pick from brands you've used before, or add a new one.
 - **Add from a shop link**: paste a product page link in "Add item" and the app fills in the details and downloads the photo. It works without AI too (it reads the product data most shops put in their pages), but some shops block this.
-- **Today**: 2 of your own outfits that suit the weather, occasion and what's clean, plus 1 new idea (👍 Keep / 👎). New ideas use simple rules (no AI):
+- **Today**: 2 of your own outfits that suit the weather, occasion and what's clean, plus 1 new idea (Save it to My outfits without wearing it, or 👎). New ideas use simple rules (no AI):
   - the forecast for your city (free [Open-Meteo](https://open-meteo.com) data, no API key needed)
   - the occasion you pick
   - what you've worn recently (it avoids repeats and brings back neglected pieces)
@@ -32,7 +32,7 @@ A small self-hosted closet tracker and outfit recommender. It runs as one Docker
 - **History**: tap "Wear this" to log an outfit, or log one by hand. Rate outfits with stars, and future suggestions take the ratings into account. Tap ✎ to change an outfit's pieces, date, occasion or rating and to add a note; when Today suggests that outfit again, it shows your note.
 - **Outfits**: one list in three parts.
   - **My outfits**: a grid with a cover per outfit (your try-on picture, otherwise a flat lay). Tap one to edit it, swap a piece, add photos, wear it today or plan it for a date. Filter by occasion and weather, sort by rating or least recently worn. "＋ Create new outfit" lets the AI make some or you pick the pieces yourself.
-  - **To review**: new ideas from the AI, one at a time: 👍 Keep, 👎 Not for me, Later, Try on, or tap a piece to swap it.
+  - **To review**: new ideas from the AI, one at a time: 👍 Save, 👎 Not for me, Later, Try on, or tap a piece to swap it.
   - **Rejected**: what you turned down, with your reasons; send one back to review if you change your mind.
 
 ## Optional AI features (OpenAI)

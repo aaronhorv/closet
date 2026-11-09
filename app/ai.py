@@ -275,7 +275,8 @@ Rules for every outfit:
 - occasion: what the outfit is for: 1 casual (everyday), 2 smart casual (work), 3 formal (elegant).
 - The user's ground rules are strict: never break them.
 - Learn from the user's past outfits: repeat what they rated highly, avoid what they rated low, and follow their notes (on items and outfits).
-- Add shoes when the closet has any, and a pair of socks when the closet has any. Outerwear and one accessory are optional.
+- Add shoes when the closet has any. Outerwear is optional.
+- Socks and accessories in the closet are statement pieces. Plain neutral socks and basic accessories (a belt matching the shoes, a plain watch) are always available and must NOT be listed. Only include a catalogued sock or accessory when it genuinely improves the outfit (a pocket square with a jacket, a tie for a formal look, a scarf in the cold, patterned socks as the single playful touch of a calm casual or smart-casual look); otherwise leave them out.
 - Keep formality consistent (1 casual, 2 smart casual, 3 formal) and warmth roughly consistent (1 very light .. 5 very warm).
 - Colors: neutrals go with anything; prefer at most one bold accent color per outfit.
 - Patterns: usually at most one patterned piece; pair it with solids.
@@ -319,7 +320,7 @@ MENSWEAR_GUIDE = """Classic menswear guide (follow it; the user's own rules come
 - A blazer or sport coat is made to be worn separately; a suit jacket looks best with its own trousers.
 - Colors: build on neutrals (navy, grey, white, light blue, brown, beige); one accent color; darker on the bottom for formal looks.
 - Shoes: darker shoes are dressier; brown goes with navy, grey, beige and green; black with charcoal, black and navy for formal.
-- Socks: for work and formal, match the trousers (or else the shoes); patterned socks only as the single playful piece in casual or smart-casual looks."""
+- Socks: plain socks matching the trousers are assumed; a catalogued (statement) sock only as the single playful piece in casual or smart-casual looks."""
 
 
 def build_outfits(items: list, count: int, anchor: dict = None, note: str = "",
@@ -506,7 +507,8 @@ Check, in this order of importance:
 2. Proportions and silhouette: top vs bottom balance, tucked vs untucked, layer lengths.
 3. Colors and patterns together, contrast with the user's skin and hair, too many accents, clashing tones or textures.
 4. Condition: wrinkles, creases, pilling, stains, scuffed or dirty shoes, visible wear.
-5. Suitability for the stated occasion and the weather; the user's ground rules and classic menswear rules.
+5. Suitability for the stated occasion; the user's ground rules and classic menswear rules.
+   Judge only how the outfit looks: ignore the weather and the season.
 6. Details: collar under the jacket, belt and shoe match, sock visibility, tie or pocket square, untidy tucks.
 
 Output:
@@ -530,8 +532,6 @@ def check_look(photo: bytes, outfit: list, closet: list, occasion: int, temp=Non
         raise AIError("Couldn't read that photo.")
     occ = {1: "casual (everyday)", 2: "smart casual (work)", 3: "formal (elegant)"}.get(occasion, "smart casual (work)")
     parts = [f"Occasion: {occ}."]
-    if temp is not None:
-        parts.append(f"It feels like {round(temp)}°C today.")
     parts.append("The outfit in the photo (closet pieces):")
     parts.extend(_item_line(i) for i in outfit)
     parts.append("\nThe rest of the closet (for swaps):")
@@ -542,7 +542,7 @@ def check_look(photo: bytes, outfit: list, closet: list, occasion: int, temp=Non
         parts.extend(f"- {rulebook.describe(r)}" for r in rules)
     if classic:
         parts.append("\nClassic menswear rules the user follows:")
-        parts.extend(f"- {r}" for r in menswear.SUMMARY)
+        parts.extend(f"- {r}" for r in menswear.SUMMARY if "season" not in r.lower() and "cold" not in r.lower())
     if style.strip():
         parts.append(f"\nThe user's style preferences: {style.strip()[:1000]}")
     data = _call(CHECK_INSTRUCTIONS,

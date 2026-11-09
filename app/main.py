@@ -1261,12 +1261,12 @@ def check_outfit_photo(photo_id: int, body: Optional[CheckIn] = None):
     if not occ:
         forms = [i["formality"] for i in items if i["category"] not in ("accessory", "socks")]
         occ = round(sum(forms) / len(forms)) if forms else 2
-    temp = today_temp(settings)
+    # the check is about how the outfit looks, not the weather: no temperature, no weather-dependent rules
     photo = _read_photo(row["original"] or row["file"])
     if not photo:
         raise HTTPException(404, "Photo file is missing.")
     try:
-        review = ai.check_look(photo, items, closet, occ, temp, rulebook.active(settings["rules"], occ, temp),
+        review = ai.check_look(photo, items, closet, occ, None, rulebook.active(settings["rules"], occ, None),
                                settings["menswear"], settings["ai_prompt"])
     except ai.AIError as e:
         raise HTTPException(502, str(e))

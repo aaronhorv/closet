@@ -496,3 +496,31 @@ dialog form { display: flex; flex-direction: column; max-height: calc(100dvh - 2
   input, select, textarea { font-size: 16px !important; }
 }
 .rate-row { display: flex; align-items: center; gap: 10px; }
+
+/* type chips, name ideas, outfit check */
+.sub-chips .chip { font-size: 12px; padding: 5px 10px; }
+.sub-chips { margin-top: -6px; }
+#name-ideas:empty { display: none; }
+#name-ideas .chip { font-size: 13px; }
+#name-ideas .chip.on { background: var(--text); color: var(--bg); }
+.outfit-photos .badge.score { left: auto; right: 4px; background: var(--text); color: var(--bg); }
+.badge.score.v-works { background: var(--accent); color: var(--accent-text); }
+.badge.score.v-doesnt_work { background: var(--danger); color: #fff; }
+.review { display: flex; flex-direction: column; gap: 10px; }
+.review h4 { margin: 6px 0 0; font-size: 14px; }
+.review-head { display: grid; grid-template-columns: 110px 1fr; gap: 14px; align-items: center; }
+.review-photo { appearance: none; border: 0; padding: 0; background: none; cursor: pointer; }
+.review-photo img { width: 110px; height: 146px; object-fit: cover; border-radius: 12px; display: block; }
+.verdict { display: inline-block; font-weight: 700; font-size: 13px; padding: 3px 10px; border-radius: 999px; background: var(--surface-2); }
+.verdict.v-works { background: var(--accent-soft); color: var(--accent); }
+.verdict.v-almost { background: color-mix(in srgb, var(--star) 20%, transparent); color: var(--text); }
+.verdict.v-doesnt_work { background: color-mix(in srgb, var(--danger) 18%, transparent); color: var(--danger); }
+.score { font-size: 40px; font-weight: 700; line-height: 1.1; letter-spacing: -.02em; }
+.score span { font-size: 18px; color: var(--muted); font-weight: 600; }
+.review-summary { margin: 0; font-weight: 600; }
+.review-problems { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 8px; }
+.review-problems li span { display: block; color: var(--muted); font-size: 14px; }
+.review-works { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; font-size: 14px; }
+.swap-suggs { display: flex; flex-direction: column; gap: 6px; }
+.swap-sugg { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 12px; }
+.swap-sugg > span { display: flex; flex-direction: column; gap: 2px; }

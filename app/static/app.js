@@ -16,7 +16,7 @@ const TITLES = { today: 'Today', closet: 'Closet', history: 'History', outfits: 
 const state = {
   view: 'today', items: [], settings: { unit: 'C' },
   occasion: 2, day: 0, shuffle: 0,
-  filter: 'all', search: '',
+  filter: 'all', kindFilter: '', search: '',
   ai: false, aiResults: null, saved: [], history: [],
   kinds: {}, layerKinds: [], today: [], library: [],
 };
@@ -248,6 +248,7 @@ function renderCloset() {
   let list = state.filter === 'archived' ? state.items.filter((i) => i.archived) : active;
   if (state.filter === 'laundry') list = list.filter((i) => i.in_laundry);
   else if (CAT_LABEL[state.filter]) list = list.filter((i) => i.category === state.filter);
+  list = filterByKind(list);
   const q = state.search.trim().toLowerCase();
   if (q) list = list.filter((i) => [i.name, i.kind, i.color, i.color2, i.brand, i.material, i.pattern, i.tags, i.notes].join(' ').toLowerCase().includes(q));
   list = [...list].sort(byOrder);
@@ -291,6 +292,27 @@ async function clearLaundry() {
   await loadItems();
   renderCloset();
   toast(`${r.cleared} item${r.cleared === 1 ? '' : 's'} back in rotation`);
+}
+
+const PLURAL = { dress: 'Dresses', scarf: 'Scarves', watch: 'Watches', jewelry: 'Jewelry' };
+const pluralKind = (k) => PLURAL[k] || (k.endsWith('s') ? kindLabel(k) : `${kindLabel(k)}s`);
+
+// second row of chips: the types within the chosen category (only the ones you own)
+function filterByKind(list) {
+  const sub = $('#kind-chips');
+  if (!CAT_LABEL[state.filter]) {
+    sub.hidden = true;
+    state.kindFilter = '';
+    return list;
+  }
+  const counts = {};
+  list.forEach((i) => { const k = i.kind || '_none'; counts[k] = (counts[k] || 0) + 1; });
+  const order = [...(state.kinds[state.filter] || []), '_none'].filter((k) => counts[k]);
+  if (state.kindFilter && !counts[state.kindFilter]) state.kindFilter = '';
+  sub.hidden = order.length < 2;
+  sub.innerHTML = [`<button class="chip ${state.kindFilter ? '' : 'on'}" data-k="">All ${esc(CAT_LABEL[state.filter].toLowerCase())}</button>`,
+    ...order.map((k) => `<button class="chip ${state.kindFilter === k ? 'on' : ''}" data-k="${esc(k)}">${esc(k === '_none' ? 'No type' : pluralKind(k))}<span class="n">${counts[k]}</span></button>`)].join('');
+  return state.kindFilter ? list.filter((i) => (i.kind || '_none') === state.kindFilter) : list;
 }
 
 // ---------- item editor ----------
@@ -462,7 +484,7 @@ async function renderHistory() {
         <div class="hist-names">${o.items.map((it) => esc(it.name)).join(' · ')}</div>
         ${o.notes ? `<div class="hist-note">${esc(o.notes)}</div>` : ''}
         ${photosHTML(o, 'history', o.id)}
-        <div class="card-tools">${tool('flat', '▦ Flat lay', 'history', o.id)}${tool('photo', '📷 Photo', 'history', o.id, '', 'Add your own photo')}</div>
+        <div class="card-tools">${state.ai ? tool('check', '🔍 Check my look', 'history', o.id, 'ai') : ''}${tool('flat', '▦ Flat lay', 'history', o.id)}${tool('photo', '📷 Photo', 'history', o.id, '', 'Add your own photo')}</div>
       </article>`;
   }
   box.innerHTML = html;
@@ -487,6 +509,8 @@ function openLog(outfit = null, kind = 'history') {
   $('#log-date-field').hidden = savedMode;
   $('#log-stars-field').hidden = savedMode;
   f.outfit_name.value = savedMode ? outfit?.name || '' : '';
+  $('#name-ai-btn').hidden = !state.ai;
+  $('#name-ideas').innerHTML = '';
   f.worn_on.value = outfit?.worn_on || dayDate(0);
   f.occasion.value = String(outfit?.occasion || state.occasion);
   f.notes.value = outfit?.notes || '';
@@ -574,7 +598,7 @@ function piecesHTML(o, kind, ref, swappable) {
 function photosHTML(o, kind, ref) {
   if (!o.photos?.length) return '';
   return `<div class="outfit-photos">${o.photos.map((ph) => `<button type="button" class="ph" data-act="view" data-kind="${kind}" data-ref="${ref}" data-photo="${ph.id}" aria-label="${ph.source === 'tryon' ? 'AI try-on picture' : 'Your photo'}">
-    <img src="${esc(ph.url)}" alt="" loading="lazy">${ph.source === 'tryon' ? '<span class="badge">AI</span>' : ''}</button>`).join('')}</div>`;
+    <img src="${esc(ph.url)}" alt="" loading="lazy">${ph.source === 'tryon' ? '<span class="badge">AI</span>' : ''}${ph.review ? `<span class="badge score v-${ph.review.verdict}">${ph.review.score}/10</span>` : ''}</button>`).join('')}</div>`;
 }
 
 function heroHTML(o) {
@@ -607,7 +631,7 @@ function openOutfit(o) {
   const k = 'lib';
   const ref = o.id;
   const tools = [];
-  if (state.ai) tools.push(tool('tryon', '👤 Try on', k, ref, 'ai'));
+  if (state.ai) tools.push(tool('check', '🔍 Check my look', k, ref, 'ai', 'Take a photo wearing it; the AI judges it critically'), tool('tryon', '👤 Try on', k, ref, 'ai'));
   tools.push(tool('photo', '📷 Add photo', k, ref), tool('flat', '▦ Flat lay', k, ref),
     tool('edit', '✎ Edit', k, ref, '', 'Name, note, occasion and pieces'), tool('delete', '🗑', k, ref, '', 'Delete'));
   const tryon = [...(o.photos || [])].reverse().find((p) => p.source === 'tryon');
@@ -839,6 +863,11 @@ function openPhoto(o, kind, ref, photoId) {
   if (!ph) return;
   viewerCtx = { o, kind, ref, ph };
   const foot = [];
+  if (ph.source === 'own' && state.ai) {
+    foot.push(ph.review
+      ? `<button type="button" class="btn primary" data-vact="check">See the check (${ph.review.score}/10)</button>`
+      : '<button type="button" class="btn primary" data-vact="check">🔍 Check this look</button>');
+  }
   if (ph.source === 'own' && state.cutout) {
     foot.push(ph.has_original
       ? '<button type="button" class="btn ghost" data-vact="restore">Restore original</button>'
@@ -880,6 +909,22 @@ async function viewerAction(act, btn) {
   if (act === 'swap-remove') { applySwap(null); return; }
   const { o, kind, ref, ph } = viewerCtx || {};
   if (!ph) return;
+  if (act === 'check') { if (ph.review) openReview(o, kind, ref, ph); else runCheck(o, kind, ref, ph); return; }
+  if (act === 'recheck') { runCheck(o, kind, ref, ph); return; }
+  if (act === 'review-photo') { openPhoto(o, kind, ref, ph.id); return; }
+  if (act === 'apply-swap') {
+    const s = ph.review.swaps[Number(btn.dataset.i)];
+    const ids = o.items.map((i) => i.id).filter((id) => id !== s.out_id).concat(s.in_id);
+    btn.disabled = true;
+    try {
+      const r = await api(`/api/library/${o.id}`, sendJSON('PUT', { item_ids: ids, name: o.name, notes: o.notes, occasion: o.occasion }));
+      Object.assign(o, r);
+      btn.textContent = 'Applied ✓';
+      renderOutfits();
+      toast(`Swapped in the ${s.in_name}.`);
+    } catch (e) { toast(e.message); btn.disabled = false; }
+    return;
+  }
   if (act === 'delete') {
     if (!confirm('Delete this picture?')) return;
     try {
@@ -922,6 +967,69 @@ async function tryOn(o, kind, ref, btn) {
     btn.disabled = false;
     btn.textContent = '👤 Try on';
   }
+}
+
+// ---------- outfit check: a critical AI look at a photo of you wearing the outfit ----------
+let checkTarget = null;
+function startCheck(kind, id) {
+  checkTarget = { kind, id };
+  $('#check-photo-input').click();
+}
+async function checkNewPhoto(file) {
+  const { kind, id } = checkTarget || {};
+  const o = getOutfit(kind, id);
+  if (!o) return;
+  detailId = null;
+  viewerCtx = null;
+  openViewer('Outfit check', '<div class="loading">Uploading your photo…</div>');
+  const fd = new FormData();
+  fd.append('photo', await shrinkPhoto(file, 1600), 'photo.jpg');
+  try {
+    const ph = await api(kind === 'lib' ? `/api/library/${id}/photos` : `/api/outfits/${id}/photos`, { method: 'POST', body: fd });
+    o.photos = [...(o.photos || []), ph];
+    runCheck(o, kind, id, ph);
+  } catch (e) {
+    openViewer('Outfit check', `<div class="import-status error">${esc(e.message)}</div>`);
+  }
+}
+async function runCheck(o, kind, ref, ph) {
+  detailId = null;
+  viewerCtx = null;
+  openViewer('Outfit check', '<div class="loading">Looking closely at your outfit… (10–30 seconds)</div>');
+  try {
+    const np = await api(`/api/outfit-photos/${ph.id}/check`, { method: 'POST' });
+    Object.assign(ph, np);
+    rerenderCard(kind, ref);
+    openReview(o, kind, ref, ph);
+  } catch (e) {
+    viewerCtx = { o, kind, ref, ph };
+    openViewer('Outfit check', `<div class="import-status error">${esc(e.message)}</div>`,
+      '<span></span><div class="dlg-foot-left"><button type="button" class="btn" data-vact="recheck">Try again</button></div>');
+  }
+}
+const VERDICT = { works: 'Works', almost: 'Almost', doesnt_work: 'Doesn’t work' };
+function openReview(o, kind, ref, ph) {
+  const r = ph.review;
+  viewerCtx = { o, kind, ref, ph };
+  detailId = null;
+  const swaps = (r.swaps || []).map((s, i) => `<div class="swap-sugg"><span><span>${esc(s.out_name)} → <strong>${esc(s.in_name)}</strong></span>
+      <span class="muted small">${esc(s.reason)}</span></span>
+      ${kind === 'lib' ? `<button type="button" class="btn" data-vact="apply-swap" data-i="${i}">Apply</button>` : ''}</div>`).join('');
+  const body = `<div class="review">
+      <div class="review-head">
+        <button type="button" class="review-photo" data-vact="review-photo" aria-label="See the photo"><img src="${esc(ph.url)}" alt=""></button>
+        <div><div class="verdict v-${r.verdict}">${VERDICT[r.verdict] || ''}</div>
+          <div class="score">${r.score}<span>/10</span></div>
+          <div class="muted small">${esc([OCCASIONS[r.occasion], r.checked_on ? `checked ${dayLabel(r.checked_on).toLowerCase()}` : ''].filter(Boolean).join(' · '))}</div></div>
+      </div>
+      <p class="review-summary">${esc(r.summary)}</p>
+      ${r.mismatch ? `<div class="import-status error small">${esc(r.mismatch)}</div>` : ''}
+      ${r.problems?.length ? `<h4>Fix first</h4><ol class="review-problems">${r.problems.map((p) => `<li><strong>${esc(p.issue)}</strong><span>${esc(p.fix)}</span></li>`).join('')}</ol>` : ''}
+      ${r.works?.length ? `<h4>What works</h4><ul class="review-works">${r.works.map((w) => `<li>${esc(w)}</li>`).join('')}</ul>` : ''}
+      ${swaps ? `<h4>Swaps from your closet</h4><div class="swap-suggs">${swaps}</div>` : ''}
+      <div class="viewer-note">An AI opinion from one photo. Light, angle and distance matter; a full-length photo works best.</div>
+    </div>`;
+  openViewer('Outfit check', body, '<span></span><div class="dlg-foot-left"><button type="button" class="btn ghost" data-vact="recheck">Check again</button></div>');
 }
 
 function reasonFrom(el) {
@@ -993,6 +1101,7 @@ async function onOutfitTool(e) {
   if (act === 'flat') openFlatLay(o);
   else if (act === 'tryon') tryOn(o, kind, ref, el);
   else if (act === 'photo') pickOutfitPhoto(kind, o.id);
+  else if (act === 'check') startCheck(kind, o.id);
   else if (act === 'view') openPhoto(o, kind, ref, Number(el.dataset.photo));
   else if (act === 'swap') openSwap(o, Number(el.dataset.item));
   else if (act === 'edit') openLog(o, 'lib');
@@ -1872,7 +1981,11 @@ function init() {
   $('#add-item-btn').onclick = () => openItem();
   $('#cat-chips').addEventListener('click', (e) => {
     const c = e.target.closest('[data-f]');
-    if (c) { state.filter = c.dataset.f; renderCloset(); }
+    if (c) { state.filter = c.dataset.f; state.kindFilter = ''; renderCloset(); }
+  });
+  $('#kind-chips').addEventListener('click', (e) => {
+    const c = e.target.closest('[data-k]');
+    if (c) { state.kindFilter = c.dataset.k; renderCloset(); }
   });
   $('#closet-grid').addEventListener('click', (e) => {
     const lb = e.target.closest('[data-laundry]');
@@ -2000,6 +2113,25 @@ function init() {
     $$('[data-star]', $('#log-stars')).forEach((b) => b.classList.toggle('on', Number(b.dataset.star) <= logRating));
   });
   $('#log-form').addEventListener('submit', saveLog);
+  $('#name-ai-btn').onclick = async () => {
+    if (!picked.size) { toast('Pick the pieces first.'); return; }
+    const btn = $('#name-ai-btn');
+    const f = $('#log-form');
+    btn.disabled = true;
+    btn.textContent = 'Thinking…';
+    try {
+      const r = await api('/api/ai/name', sendJSON('POST', { item_ids: [...picked], occasion: Number(f.occasion.value), notes: f.notes.value }));
+      $('#name-ideas').innerHTML = r.names.map((n) => `<button type="button" class="chip" data-name="${esc(n)}">${esc(n)}</button>`).join('');
+    } catch (e) { toast(e.message); }
+    btn.disabled = false;
+    btn.textContent = '✨ Suggest';
+  };
+  $('#name-ideas').addEventListener('click', (e) => {
+    const c = e.target.closest('[data-name]');
+    if (!c) return;
+    $('#log-form').outfit_name.value = c.dataset.name;
+    $$('#name-ideas .chip').forEach((x) => x.classList.toggle('on', x === c));
+  });
 
   // settings
   bindSeg($('#unit-seg'), (v) => {
@@ -2065,6 +2197,11 @@ function init() {
     const b = e.target.closest('[data-vact]');
     if (b) viewerAction(b.dataset.vact, b);
   }));
+  $('#check-photo-input').addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (file && checkTarget) checkNewPhoto(file);
+  });
   $('#outfit-photo-input').addEventListener('change', (e) => {
     const file = e.target.files[0];
     e.target.value = '';

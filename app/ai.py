@@ -165,7 +165,7 @@ DESCRIBE_INSTRUCTIONS = """You catalog clothes for a personal closet app. Descri
 - is_clothing: false if it isn't a clothing item, shoes or accessory.
 - name: short and specific, 2-5 words, e.g. "Navy oxford shirt", "Black leather Chelsea boots". No brand in the name.
 - category: top (shirts, t-shirts, sweaters, hoodies), bottom (trousers, jeans, shorts, skirts), dress (dresses, jumpsuits), suit (blazers, suit jackets, waistcoats), outerwear (coats, jackets, parkas), shoes, socks, accessory (bags, belts, hats, scarves, ties, jewelry).
-- kind: the type within the category. top: t-shirt, shirt, polo, turtleneck, blouse, tank top, sweater, cardigan, sweatshirt, hoodie. bottom: jeans, chinos, trousers, suit trousers, shorts, skirt, joggers. dress: dress, jumpsuit. suit: suit jacket, blazer, waistcoat. outerwear: coat, jacket, parka, raincoat, overshirt, gilet. shoes: sneakers, formal shoes (oxfords, derbies, brogues, heels), loafers, boots, sandals. socks: dress socks (thin, plain, for work and suits), casual socks, sport socks, no-show socks. accessory: belt, tie, scarf, hat, bag, watch, jewelry, gloves. "" if none fits.
+- kind: the type within the category. top: t-shirt, shirt, polo, turtleneck, blouse, tank top, sweater, cardigan, sweatshirt, hoodie. bottom: jeans, chinos, trousers, suit trousers, shorts, skirt, joggers. dress: dress, jumpsuit. suit: suit jacket, blazer, waistcoat. outerwear: coat, jacket, parka, raincoat, overshirt, gilet. shoes: sneakers, formal shoes (oxfords, derbies, brogues, heels), loafers, boots, sandals. socks: dress socks (thin, plain, for work and suits), casual socks, sport socks, no-show socks. accessory: belt, tie, pocket square, scarf, hat, bag, watch, jewelry, gloves. "" if none fits.
 - color: the main color as one or two plain words, lower case (e.g. "navy", "light blue", "olive").
 - color2: a clearly visible second color (e.g. the stripes or a contrasting trim), lower case, or "" if there isn't one.
 - pattern: solid, striped, checked (incl. plaid, gingham, houndstooth), floral, print (graphic, logo, animal, abstract), or other.
@@ -460,3 +460,144 @@ def try_on(body: bytes, face, pieces: list, quality: str = "medium") -> bytes:
         return base64.b64decode(resp.data[0].b64_json)
     except Exception:
         raise AIError("The AI didn't send a picture back. Try again.")
+
+
+# ---------- outfit check: a critical look at a photo of the user wearing an outfit ----------
+
+CHECK_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "person_visible": {"type": "boolean"},
+        "verdict": {"type": "string", "enum": ["works", "almost", "doesnt_work"]},
+        "score": {"type": "integer", "enum": list(range(1, 11))},
+        "summary": {"type": "string"},
+        "problems": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"issue": {"type": "string"}, "fix": {"type": "string"}},
+                "required": ["issue", "fix"],
+                "additionalProperties": False,
+            },
+        },
+        "works": {"type": "array", "items": {"type": "string"}},
+        "swaps": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"out_id": {"type": "integer"}, "in_id": {"type": "integer"}, "reason": {"type": "string"}},
+                "required": ["out_id", "in_id", "reason"],
+                "additionalProperties": False,
+            },
+        },
+        "mismatch": {"type": "string"},
+    },
+    "required": ["person_visible", "verdict", "score", "summary", "problems", "works", "swaps", "mismatch"],
+    "additionalProperties": False,
+}
+
+CHECK_INSTRUCTIONS = """You are a demanding, honest menswear stylist reviewing a real photo of the user wearing an outfit.
+Judge what the photo actually shows, not how good the outfit could be in theory. Be direct and specific. No flattery,
+no softening phrases, never call anything perfect. Even a strong look gets at least one concrete improvement.
+
+Check, in this order of importance:
+1. Fit: shoulder seams, chest and waist (pulling or excess fabric), sleeve length (shirt cuff vs jacket sleeve),
+   jacket length, trouser rise, waist, leg width and taper, length and break on the shoes, tightness or bagginess.
+2. Proportions and silhouette: top vs bottom balance, tucked vs untucked, layer lengths.
+3. Colors and patterns together, contrast with the user's skin and hair, too many accents, clashing tones or textures.
+4. Condition: wrinkles, creases, pilling, stains, scuffed or dirty shoes, visible wear.
+5. Suitability for the stated occasion and the weather; the user's ground rules and classic menswear rules.
+6. Details: collar under the jacket, belt and shoe match, sock visibility, tie or pocket square, untidy tucks.
+
+Output:
+- person_visible: false if no person wearing clothes is clearly visible (then leave the rest minimal).
+- verdict: works (would look good in real life as is), almost (one or two fixes needed), doesnt_work.
+- score: 1-10. Be calibrated: 5 is an ordinary, unremarkable look; 7 is good; 8+ only for genuinely sharp looks.
+- summary: one blunt sentence.
+- problems: the biggest problems first, max 5. issue = what is wrong and where; fix = exactly what to do.
+- works: max 3 short points that genuinely work (may be empty).
+- swaps: up to 3 replacements from the user's closet list (ids): out_id must be a piece of this outfit,
+  in_id a closet piece of the same category. Only when the swap clearly fixes a problem.
+- mismatch: if the photo clearly shows different pieces than the listed outfit, say which; otherwise ""."""
+
+
+def check_look(photo: bytes, outfit: list, closet: list, occasion: int, temp=None, rules: list = None,
+               classic: bool = True, style: str = "") -> dict:
+    """A critical review of a photo of the user wearing an outfit. Returns the parsed review."""
+    try:
+        url = "data:image/jpeg;base64," + base64.b64encode(_jpeg(photo, 1536)).decode()
+    except Exception:
+        raise AIError("Couldn't read that photo.")
+    occ = {1: "casual (everyday)", 2: "smart casual (work)", 3: "formal (elegant)"}.get(occasion, "smart casual (work)")
+    parts = [f"Occasion: {occ}."]
+    if temp is not None:
+        parts.append(f"It feels like {round(temp)}°C today.")
+    parts.append("The outfit in the photo (closet pieces):")
+    parts.extend(_item_line(i) for i in outfit)
+    parts.append("\nThe rest of the closet (for swaps):")
+    in_outfit = {i["id"] for i in outfit}
+    parts.extend(_item_line(i) for i in closet if i["id"] not in in_outfit)
+    if rules:
+        parts.append("\nThe user's ground rules:")
+        parts.extend(f"- {rulebook.describe(r)}" for r in rules)
+    if classic:
+        parts.append("\nClassic menswear rules the user follows:")
+        parts.extend(f"- {r}" for r in menswear.SUMMARY)
+    if style.strip():
+        parts.append(f"\nThe user's style preferences: {style.strip()[:1000]}")
+    data = _call(CHECK_INSTRUCTIONS,
+                 [{"type": "input_text", "text": "\n".join(parts)}, {"type": "input_image", "image_url": url}],
+                 CHECK_SCHEMA, "outfit_check")
+    if not data.get("person_visible"):
+        raise AIError("Couldn't see you wearing the outfit in this photo. Try a full-length photo in good light.")
+    closet_by_id = {i["id"]: i for i in closet}
+    swaps = []
+    for s in data.get("swaps") or []:
+        out_it, in_it = closet_by_id.get(s.get("out_id")), closet_by_id.get(s.get("in_id"))
+        if out_it and in_it and out_it["id"] in in_outfit and in_it["id"] not in in_outfit \
+                and out_it["category"] == in_it["category"]:
+            swaps.append({"out_id": out_it["id"], "out_name": out_it["name"], "in_id": in_it["id"],
+                          "in_name": in_it["name"], "reason": str(s.get("reason") or "")[:200]})
+    return {
+        "verdict": data.get("verdict") if data.get("verdict") in ("works", "almost", "doesnt_work") else "almost",
+        "score": min(10, max(1, int(data.get("score") or 5))),
+        "summary": str(data.get("summary") or "")[:300],
+        "problems": [{"issue": str(p.get("issue") or "")[:300], "fix": str(p.get("fix") or "")[:300]}
+                     for p in (data.get("problems") or [])[:5]],
+        "works": [str(w)[:200] for w in (data.get("works") or [])[:3]],
+        "swaps": swaps[:3],
+        "mismatch": str(data.get("mismatch") or "")[:300],
+        "occasion": occasion,
+    }
+
+
+# ---------- outfit names ----------
+
+NAMES_SCHEMA = {
+    "type": "object",
+    "properties": {"names": {"type": "array", "items": {"type": "string"}}},
+    "required": ["names"],
+    "additionalProperties": False,
+}
+
+NAMES_INSTRUCTIONS = """Suggest 3 different names for an outfit in a personal closet app.
+Each 2-4 words, easy to recognise at a glance in a list (hint at the occasion, key colors or the main piece),
+with a little character, e.g. "Navy Boardroom", "Weekend Denim", "Grey Flannel Friday". No brand names, no emojis,
+no quotes. Avoid names the user already uses."""
+
+
+def suggest_names(items: list, occasion=None, notes: str = "", taken: list = None) -> list:
+    parts = ["Outfit pieces:", *(_item_line(i) for i in items)]
+    if occasion:
+        parts.append(f"Occasion: {({1: 'casual', 2: 'work', 3: 'formal'}).get(occasion, '')}")
+    if notes.strip():
+        parts.append(f"User's note: {notes.strip()[:300]}")
+    if taken:
+        parts.append("Names already used: " + ", ".join(taken[:60]))
+    data = _call(NAMES_INSTRUCTIONS, [{"type": "input_text", "text": "\n".join(parts)}], NAMES_SCHEMA, "outfit_names")
+    out = []
+    for n in data.get("names") or []:
+        n = str(n).strip().strip('"“”').strip()[:60]
+        if n and n.lower() not in {x.lower() for x in out}:
+            out.append(n)
+    return out[:3]

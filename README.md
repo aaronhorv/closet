@@ -12,6 +12,9 @@ A small self-hosted closet tracker and outfit recommender. It runs as one Docker
 - **Not for me (👎)**: on Today's new ideas and while reviewing. Tap a reason chip (or type one); it's never suggested again and the AI learns from the reasons. Find it under Outfits → Rejected.
 - **Flat lay**: a free picture of an outfit's pieces laid out together (▦ on any outfit).
 - **Your outfit photos**: add photos to worn outfits in History or to your outfits (📷, or drop a photo on it), also right after "Wear today".
+- **Outfit check** (AI): open an outfit (My outfits or History), tap "🔍 Check my look" and take a photo wearing it. The AI judges it critically (fit, proportions, colors, condition, occasion, weather and your rules): a verdict, a score out of 10, the biggest problems with fixes, and swaps from your closet you can apply in one tap. About 1 cent per check.
+- **Outfit names** (AI): when you put an outfit together yourself, "✨ Suggest" offers 3 names.
+- **Closet filters**: pick a category, then a type (Shirts, Sweaters, Formal shoes, Pocket squares…). "No type" finds pieces without one.
 - **Try-on** (AI): add a full-body photo in Settings → Try-on, then tap "Try on" on an AI or saved outfit to see yourself wearing it. Medium quality costs roughly 3–6 cents per picture and takes up to a minute. Your photos stay on your server and are only sent to OpenAI when you tap the button.
 - **Outfit rules** (Settings): ground rules that Today and the AI always follow, e.g. "Work: tops only shirt or turtleneck, when colder than 10°", "Work: shoes only formal shoes", "Sweater always over another top". Pieces without a type are left out by "only" rules, and Settings lists them.
 - **Clean photos**: backgrounds are removed on your server when you add a photo (free, no AI or key needed). The original is kept, so "Restore original photo" undoes it. Settings → "Remove background from all photos" cleans up existing ones. Works best on a plain or tidy background.

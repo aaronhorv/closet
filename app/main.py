@@ -123,7 +123,8 @@ EXTRA_SAVED_COLUMNS = {
     "updated_at": "TEXT",                      # ideas are reviewed oldest first; "Later" bumps this
     "rating": "INTEGER",                       # your own stars for the outfit (1-5)
 }
-EXTRA_LOG_COLUMNS = {"library_id": "INTEGER"}  # the outfit from your list that was worn
+EXTRA_LOG_COLUMNS = {"library_id": "INTEGER"}
+EXTRA_PHOTO_COLUMNS = {"review": "TEXT"}         # the AI's outfit check of this photo (JSON)  # the outfit from your list that was worn
 STATUSES = ("idea", "kept", "rejected")
 # Categories that can be linked as a suit.
 PAIRS = {"suit": "bottom", "bottom": "suit"}
@@ -167,6 +168,10 @@ def init_db():
         for col, decl in EXTRA_LOG_COLUMNS.items():
             if col not in have:
                 conn.execute(f"ALTER TABLE outfits ADD COLUMN {col} {decl}")
+        have = {r["name"] for r in conn.execute("PRAGMA table_info(outfit_photos)")}
+        for col, decl in EXTRA_PHOTO_COLUMNS.items():
+            if col not in have:
+                conn.execute(f"ALTER TABLE outfit_photos ADD COLUMN {col} {decl}")
         migrate_library(conn)
         load_ai_config(conn)
 
@@ -1123,8 +1128,14 @@ def restore_discarded(discarded_id: int):
 # ---------- outfit photos (your own pictures and AI try-ons) ----------
 
 def photo_dict(r) -> dict:
+    review = None
+    if "review" in r.keys() and r["review"]:
+        try:
+            review = json.loads(r["review"])
+        except ValueError:
+            review = None
     return {"id": r["id"], "url": f"/photos/{r['file']}", "source": r["source"],
-            "has_original": bool(r["original"]), "created_at": r["created_at"]}
+            "has_original": bool(r["original"]), "created_at": r["created_at"], "review": review}
 
 
 def outfit_photos(conn, column: str, ids) -> dict:
@@ -1216,6 +1227,52 @@ def restore_outfit_photo(photo_id: int):
         row2 = get_outfit_photo(conn, photo_id)
     delete_photo(row["file"])
     return photo_dict(row2)
+
+
+class CheckIn(BaseModel):
+    occasion: Optional[int] = None
+
+
+@app.post("/api/outfit-photos/{photo_id}/check")
+def check_outfit_photo(photo_id: int, body: Optional[CheckIn] = None):
+    """A critical AI look at a photo of you wearing the outfit it belongs to."""
+    require_ai()
+    body = body or CheckIn()
+    check_occasion(body.occasion)
+    with db() as conn:
+        row = get_outfit_photo(conn, photo_id)
+        if row["source"] != "own":
+            raise HTTPException(400, "Only your own photos can be checked.")
+        settings = get_settings(conn)
+        if row["saved_id"]:
+            o = library_entry(conn, row["saved_id"])
+            ids, occ = [i["id"] for i in o["items"]], o["occasion"]
+        elif row["outfit_id"]:
+            log = next((x for x in fetch_outfits(conn, 1000) if x["id"] == row["outfit_id"]), None)
+            if log is None:
+                raise HTTPException(404, "Outfit not found")
+            ids, occ = [i["id"] for i in log["items"]], log["occasion"]
+        else:
+            raise HTTPException(400, "This photo doesn't belong to an outfit.")
+        items = [get_item(conn, i) for i in ids]
+        closet = fetch_items(conn, "i.archived = 0")
+    occ = body.occasion or occ
+    if not occ:
+        forms = [i["formality"] for i in items if i["category"] not in ("accessory", "socks")]
+        occ = round(sum(forms) / len(forms)) if forms else 2
+    temp = today_temp(settings)
+    photo = _read_photo(row["original"] or row["file"])
+    if not photo:
+        raise HTTPException(404, "Photo file is missing.")
+    try:
+        review = ai.check_look(photo, items, closet, occ, temp, rulebook.active(settings["rules"], occ, temp),
+                               settings["menswear"], settings["ai_prompt"])
+    except ai.AIError as e:
+        raise HTTPException(502, str(e))
+    review["checked_on"] = date.today().isoformat()
+    with db() as conn:
+        conn.execute("UPDATE outfit_photos SET review = ? WHERE id = ?", (json.dumps(review), photo_id))
+        return photo_dict(get_outfit_photo(conn, photo_id))
 
 
 # ---------- try-on: you wearing an outfit (OpenAI image model) ----------
@@ -1369,6 +1426,27 @@ def import_url(body: ImportIn):
 def require_ai():
     if not ai.enabled():
         raise HTTPException(400, "AI is not set up. Add an OpenAI API key in Settings.")
+
+
+class NameIn(BaseModel):
+    item_ids: List[int]
+    occasion: Optional[int] = None
+    notes: str = ""
+
+
+@app.post("/api/ai/name")
+def ai_name(body: NameIn):
+    """Three name ideas for an outfit you put together."""
+    require_ai()
+    ids = list(dict.fromkeys(body.item_ids))
+    with db() as conn:
+        check_items(conn, ids)
+        items = [get_item(conn, i) for i in ids]
+        taken = [r["name"] for r in conn.execute("SELECT name FROM saved_outfits WHERE name <> '' ORDER BY id DESC LIMIT 60")]
+    try:
+        return {"names": ai.suggest_names(items, body.occasion, body.notes, taken)}
+    except ai.AIError as e:
+        raise HTTPException(502, str(e))
 
 
 @app.post("/api/ai/describe")

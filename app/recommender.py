@@ -410,7 +410,10 @@ def recommend(items, occasion, temp, rainy, on: date, seed, outerwear_below=16.0
 
     used_acc = set()
     for c in chosen:
-        for sc, acc in pools["accessory"]:
+        # a jacket outfit gets its pocket square first, if one fits
+        jacketed = any(i["category"] == "suit" for i in c["items"])
+        accs = sorted(pools["accessory"], key=lambda p: (not (jacketed and p[1].get("kind") == "pocket square"), -p[0]))
+        for sc, acc in accs:
             if acc["id"] not in used_acc and sc > -1 and fine(c["items"] + [acc]):
                 c["items"] = c["items"] + [acc]
                 used_acc.add(acc["id"])

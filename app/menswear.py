@@ -21,6 +21,7 @@ SUMMARY = [
     "No sneakers, sandals, hoodies, joggers or shorts with a full suit.",
     "No shorts, hoodies, joggers, sandals, tank tops or graphic tees at work; formal also rules out jeans, t-shirts and sneakers.",
     "A tie only with a collared shirt.",
+    "A pocket square only with a blazer or suit jacket.",
     "At most one bold pattern per outfit (patterned socks count).",
     "At most two bold colors per outfit; neutrals (navy, grey, white, beige, brown...) don't count.",
     "Fabrics for the season: no linen when it's cold, no flannel, tweed or heavy wool when it's hot.",
@@ -99,6 +100,8 @@ def broken(items, occasion, temp) -> list:
         out.append("No graphic tees at work.")
     if "tie" in kinds and "shirt" not in kinds:
         out.append("A tie needs a collared shirt.")
+    if "pocket square" in kinds and not by_cat.get("suit"):
+        out.append("A pocket square needs a blazer or suit jacket.")
 
     # patterns and colors (clothes and socks, not accessories)
     if sum(1 for i in items if i["category"] != "accessory" and is_patterned(i)) >= 2:

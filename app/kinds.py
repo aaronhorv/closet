@@ -11,7 +11,7 @@ KINDS = {
     "outerwear": ["coat", "jacket", "parka", "raincoat", "overshirt", "gilet"],
     "shoes": ["sneakers", "formal shoes", "loafers", "boots", "sandals"],
     "socks": ["dress socks", "casual socks", "sport socks", "no-show socks"],
-    "accessory": ["belt", "tie", "scarf", "hat", "bag", "watch", "jewelry", "gloves"],
+    "accessory": ["belt", "tie", "pocket square", "scarf", "hat", "bag", "watch", "jewelry", "gloves"],
 }
 ALL_KINDS = sorted({k for ks in KINDS.values() for k in ks})
 
@@ -58,6 +58,7 @@ _GUESS = [
     ("sport socks", r"sport socks?|sports socks?|athletic socks?|running socks?|tennis socks?|gym socks?"),
     ("dress socks", r"dress socks?|business socks?|suit socks?|over[- ]the[- ]calf|otc"),
     ("casual socks", r"socks?"),
+    ("pocket square", r"pocket squares?|pochettes?|handkerchiefs?"),
     ("belt", r"belts?"),
     ("tie", r"ties?|neckties?|bow ?ties?"),
     ("scarf", r"scarf|scarves"),

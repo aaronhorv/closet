@@ -47,6 +47,7 @@
         <button id="add-item-btn" class="btn primary">Add item</button>
       </div>
       <div class="chips" id="cat-chips"></div>
+      <div class="chips sub-chips" id="kind-chips" hidden></div>
       <div id="laundry-bar" class="laundry-bar" hidden></div>
       <div id="closet-grid" class="grid"></div>
     </section>
@@ -278,9 +279,11 @@
         <button type="button" class="icon-btn" data-close aria-label="Close">✕</button>
       </div>
       <div class="dlg-body">
-        <label class="field" id="log-name-field" hidden>Name
-          <input name="outfit_name" maxlength="80" placeholder="e.g. Client meeting">
-        </label>
+        <div class="field" id="log-name-field" hidden>Name
+          <div class="inline"><input name="outfit_name" maxlength="80" placeholder="e.g. Client meeting" aria-label="Name">
+            <button type="button" class="btn" id="name-ai-btn" hidden>✨ Suggest</button></div>
+          <div class="kind-chips" id="name-ideas"></div>
+        </div>
         <div class="row2">
           <label class="field" id="log-date-field">Date
             <input type="date" name="worn_on">
@@ -454,6 +457,7 @@
     </div>
   </dialog>
   <input type="file" id="outfit-photo-input" accept="image/*" hidden>
+  <input type="file" id="check-photo-input" accept="image/*" hidden>
 
   <div id="toast" role="status" aria-live="polite"></div>
   <script src="/app.js"></script>

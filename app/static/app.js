@@ -601,17 +601,25 @@ function photosHTML(o, kind, ref) {
     <img src="${esc(ph.url)}" alt="" loading="lazy">${ph.source === 'tryon' ? '<span class="badge">AI</span>' : ''}${ph.review ? `<span class="badge score v-${ph.review.verdict}">${ph.review.score}/10</span>` : ''}</button>`).join('')}</div>`;
 }
 
+// The picture that stands for an outfit: your latest real photo, else the latest try-on, else none (flat lay).
+function coverPhoto(o) {
+  const newest = [...(o.photos || [])].reverse();
+  return newest.find((p) => p.source === 'own') || newest.find((p) => p.source === 'tryon') || null;
+}
+
 function heroHTML(o) {
-  const tryon = [...(o.photos || [])].reverse().find((p) => p.source === 'tryon');
-  if (tryon) {
-    return `<button type="button" class="hero" data-act="view" data-kind="lib" data-ref="${o.id}" data-photo="${tryon.id}"><img src="${esc(tryon.url)}" alt="You wearing this outfit"></button>`;
+  const ph = coverPhoto(o);
+  if (ph) {
+    return `<button type="button" class="hero" data-act="view" data-kind="lib" data-ref="${o.id}" data-photo="${ph.id}"><img src="${esc(ph.url)}" alt="You wearing this outfit"></button>`;
   }
   return `<div class="hero">${flatLayHTML(o.items, false)}</div>`;
 }
 
 function coverHTML(o) {
-  const tryon = [...(o.photos || [])].reverse().find((p) => p.source === 'tryon');
-  if (tryon) return `<div class="cover"><img src="${esc(tryon.url)}" alt="" loading="lazy"><span class="badge">Try-on</span></div>`;
+  const ph = coverPhoto(o);
+  if (ph) {
+    return `<div class="cover"><img src="${esc(ph.url)}" alt="" loading="lazy">${ph.source === 'tryon' ? '<span class="badge">Try-on</span>' : ''}</div>`;
+  }
   return `<div class="cover">${flatLayHTML(o.items, false)}</div>`;
 }
 
@@ -634,10 +642,7 @@ function openOutfit(o) {
   if (state.ai) tools.push(tool('check', '🔍 Check my look', k, ref, 'ai', 'Take a photo wearing it; the AI judges it critically'), tool('tryon', '👤 Try on', k, ref, 'ai'));
   tools.push(tool('photo', '📷 Add photo', k, ref), tool('flat', '▦ Flat lay', k, ref),
     tool('edit', '✎ Edit', k, ref, '', 'Name, note, occasion and pieces'), tool('delete', '🗑', k, ref, '', 'Delete'));
-  const tryon = [...(o.photos || [])].reverse().find((p) => p.source === 'tryon');
-  const cover = tryon
-    ? `<button type="button" class="hero" data-act="view" data-kind="lib" data-ref="${ref}" data-photo="${tryon.id}"><img src="${esc(tryon.url)}" alt="You wearing this outfit"></button>`
-    : `<div class="hero">${flatLayHTML(o.items, false)}</div>`;
+  const cover = heroHTML(o);
   const unavailable = o.items.filter((it) => it.in_laundry || it.archived);
   const body = `<div class="detail outfit-card" data-detail="${ref}" data-kind="lib" data-ref="${ref}">
       ${cover}
@@ -1055,6 +1060,7 @@ async function uploadOutfitPhoto(kind, id, file) {
       const o = getOutfit('lib', id);
       if (o) o.photos = [...(o.photos || []), ph];
       if (state.view === 'outfits') renderOutfits();
+      refreshDetail(id); // the open outfit shows the new photo (and cover) right away
     } else if (state.view === 'history') renderHistory();
   } catch (e) { toast(e.message); }
 }

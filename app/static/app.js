@@ -113,6 +113,12 @@ function thumb(it, extra = '') {
   const c = cssColor(it.color);
   return `<div class="thumb swatch ${extra}" ${c ? `style="--sw:${c}"` : ''}><span>${CAT_ICON[it.category] || '•'}</span></div>`;
 }
+// "BOSS · Navy oxford shirt": the brand first makes pieces easy to tell apart (names themselves don't change)
+function displayName(it) {
+  const brand = (it.brand || '').trim();
+  const name = it.name || '';
+  return brand && !name.toLowerCase().includes(brand.toLowerCase()) ? `${brand} · ${name}` : name;
+}
 const byOrder = (a, b) => ORDER.indexOf(a.category) - ORDER.indexOf(b.category) || a.name.localeCompare(b.name);
 
 // ---------- navigation ----------
@@ -177,9 +183,7 @@ function todayCard(o, i) {
   return `
     <article class="card outfit outfit-card" data-kind="today" data-ref="${i}">
       ${head}
-      <div class="outfit-items">
-        ${o.items.map((it) => `<figure>${thumb(it)}<figcaption>${esc(it.name)}</figcaption></figure>`).join('')}
-      </div>
+      ${piecesHTML(o, 'today', i, true)}
       ${o.notes.length ? `<ul class="notes">${o.notes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul>` : ''}
       <div class="outfit-actions">${decide}<button class="btn primary" data-wear="${i}">${done}</button></div>
     </article>`;
@@ -274,7 +278,7 @@ function renderCloset() {
       ${it.archived ? '' : `<button class="laundry-btn ${it.in_laundry ? 'on' : ''}" data-laundry="${it.id}" aria-label="${it.in_laundry ? 'Mark clean' : 'Mark as in laundry'}" title="${it.in_laundry ? 'In laundry: tap when clean' : 'Send to laundry'}">🧺</button>`}
       ${it.favorite ? '<span class="fav" aria-label="Favorite">♥</span>' : ''}
       <div class="item-meta">
-        <div class="item-name">${esc(it.name)}</div>
+        <div class="item-name">${esc(displayName(it))}</div>
         ${it.kind || it.match_id ? `<div class="muted small item-kind">${esc([kindLabel(it.kind), it.match_id ? '🔗 Suit' : ''].filter(Boolean).join(' · '))}</div>` : ''}
         <div class="muted small">${it.times_worn ? `Worn ${it.times_worn}× · ${agoText(it.last_worn)}` : 'Not worn yet'}</div>
       </div>
@@ -481,7 +485,7 @@ async function renderHistory() {
         </div>
         <div class="hist-items">${o.items.map((it) => thumb(it, 'sm')).join('')}</div>
         ${o.library_name ? `<div class="hist-from">${esc(o.library_name)}</div>` : ''}
-        <div class="hist-names">${o.items.map((it) => esc(it.name)).join(' · ')}</div>
+        <div class="hist-names">${o.items.map((it) => esc(displayName(it))).join(' · ')}</div>
         ${o.notes ? `<div class="hist-note">${esc(o.notes)}</div>` : ''}
         ${photosHTML(o, 'history', o.id)}
         <div class="card-tools">${state.ai ? tool('check', '🔍 Check my look', 'history', o.id, 'ai') : ''}${tool('flat', '▦ Flat lay', 'history', o.id)}${tool('photo', '📷 Photo', 'history', o.id, '', 'Add your own photo')}</div>
@@ -521,7 +525,7 @@ function openLog(outfit = null, kind = 'history') {
     const its = active.filter((i) => i.category === k).sort(byOrder);
     if (!its.length) return '';
     return `<div><h4>${label}</h4><div class="picker-grid">${its.map((it) =>
-      `<button type="button" class="pick ${picked.has(it.id) ? 'on' : ''}" data-pick="${it.id}">${thumb(it)}<span>${esc(it.name)}</span></button>`).join('')}</div></div>`;
+      `<button type="button" class="pick ${picked.has(it.id) ? 'on' : ''}" data-pick="${it.id}">${thumb(it)}<span>${esc(displayName(it))}</span></button>`).join('')}</div></div>`;
   }).join('') : '<div class="muted">Add items to your closet first.</div>';
   updatePickCount();
   $('#log-dialog').showModal();
@@ -585,12 +589,12 @@ function tool(act, label, kind, ref, cls = '', title = '') {
   return `<button type="button" class="tool-btn ${cls}" data-act="${act}" data-kind="${kind}" data-ref="${ref}" ${title ? `title="${title}" aria-label="${title}"` : ''}>${label}</button>`;
 }
 
-function piecesHTML(o, kind, ref, swappable) {
+function piecesHTML(o, kind, ref, tappable) {
   return `<div class="outfit-items">${o.items.map((it) => {
-    const inner = `${thumb(it)}<figcaption>${esc(it.name)}</figcaption>`;
+    const inner = `${thumb(it)}<figcaption>${esc(displayName(it))}</figcaption>`;
     const dirty = it.in_laundry || it.archived ? 'dirty' : '';
-    return swappable
-      ? `<button type="button" class="piece ${dirty}" data-act="swap" data-kind="${kind}" data-ref="${ref}" data-item="${it.id}" title="Swap this piece">${inner}<span class="swap-hint" aria-hidden="true">↔</span></button>`
+    return tappable
+      ? `<button type="button" class="piece ${dirty}" data-act="piece" data-kind="${kind}" data-ref="${ref}" data-item="${it.id}" title="Details and swap">${inner}</button>`
       : `<figure class="${dirty}">${inner}</figure>`;
   }).join('')}</div>`;
 }
@@ -651,7 +655,7 @@ function openOutfit(o) {
       ${o.notes ? `<div class="outfit-note">${esc(o.notes)}</div>` : ''}
       <div class="card-tools left">${tools.join('')}</div>
       ${piecesHTML(o, k, ref, true)}
-      <div class="muted small">Tap a piece to swap it for another one.</div>
+      <div class="muted small">Tap a piece for details or to swap it.</div>
       ${unavailable.length ? `<div class="import-status error small">Not available now: ${esc(unavailable.map((i) => i.name).join(', '))}</div>` : ''}
       ${photosHTML(o, k, ref)}
     </div>`;
@@ -720,7 +724,7 @@ function libCard(o, mode) {
         <div class="card-tools">${tools.join('')}</div></div>
       ${mode === 'review' ? heroHTML(o) : ''}
       ${piecesHTML(o, k, ref, mode !== 'rejected')}
-      ${mode === 'review' ? '<div class="muted small">Tap a piece to swap it.</div>' : ''}
+      ${mode === 'review' ? '<div class="muted small">Tap a piece for details or to swap it.</div>' : ''}
       ${mode === 'kept' ? photosHTML(o, k, ref) : ''}
       ${userNote}
       ${mode === 'rejected' && o.reason ? `<div class="outfit-note">Why not: ${esc(o.reason)}</div>` : ''}
@@ -845,7 +849,7 @@ function flatLayHTML(items, withNames = true) {
     const c = cssColor(it.color);
     return `<div class="fl sw" style="${pos};${c ? `--sw:${c}` : ''}" title="${esc(it.name)}">${CAT_ICON[it.category] || '•'}</div>`;
   }).join('');
-  return `<div class="flatlay">${html}</div>${withNames ? `<div class="flatlay-names">${items.map((i) => esc(i.name)).join(' · ')}</div>` : ''}`;
+  return `<div class="flatlay">${html}</div>${withNames ? `<div class="flatlay-names">${items.map((i) => esc(displayName(i))).join(' · ')}</div>` : ''}`;
 }
 
 let viewerCtx = null;
@@ -884,34 +888,107 @@ function openPhoto(o, kind, ref, photoId) {
   openViewer(ph.source === 'tryon' ? 'Try-on' : 'Your photo', `<img src="${esc(ph.url)}" alt="">${note}`, `<span></span><div class="dlg-foot-left">${foot.join('')}</div>`);
 }
 
-async function openSwap(o, itemId) {
+// the saved outfit behind a card, if there is one (My outfits, To review, or one of yours on Today)
+function savedOf(o, kind) {
+  if (kind === 'lib') return o;
+  return o.library_id ? (state.library || []).find((x) => x.id === o.library_id) || null : null;
+}
+
+// ---------- piece details ----------
+function openPiece(o, kind, ref, itemId) {
+  const it = state.items.find((i) => i.id === itemId) || o.items.find((i) => i.id === itemId);
+  if (!it) return;
+  viewerCtx = { piece: { o, kind, ref, itemId } };
+  const photo = it.photo_url
+    ? `<img src="${esc(it.photo_url)}" alt="">`
+    : `<div class="thumb swatch" ${cssColor(it.color) ? `style="--sw:${cssColor(it.color)}"` : ''}><span>${CAT_ICON[it.category] || '•'}</span></div>`;
+  const colors = [it.color, it.color2].filter(Boolean).join(' with ');
+  const facts = [
+    ['Type', it.kind ? kindLabel(it.kind) : SINGULAR[it.category]],
+    ['Colors', colors],
+    ['Material', it.material],
+    ['Pattern', it.pattern && it.pattern !== 'solid' ? kindLabel(it.pattern) : (it.pattern ? 'Solid' : '')],
+    ['Fit', it.fit ? kindLabel(it.fit) : ''],
+    ['Warmth', WARMTH[it.warmth]],
+    ['Formality', OCCASIONS[it.formality]],
+    ['Tags', it.tags],
+    ['Worn', it.times_worn ? `${it.times_worn}× · last ${agoText(it.last_worn)}` : (it.times_worn === 0 ? 'Not yet' : '')],
+  ].filter(([, v]) => v);
+  const state_ = [it.in_laundry ? 'In the laundry' : '', it.archived ? 'Archived' : ''].filter(Boolean).join(' · ');
+  const body = `<div class="piece-detail">
+      <div class="piece-photo">${photo}</div>
+      ${it.brand ? `<div class="piece-brand">${esc(it.brand)}</div>` : ''}
+      <h3>${esc(it.name)}</h3>
+      ${state_ ? `<div class="import-status error small">${esc(state_)}</div>` : ''}
+      <dl class="piece-facts">${facts.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('')}</dl>
+      ${it.notes ? `<div class="outfit-note">${esc(it.notes)}</div>` : ''}
+    </div>`;
+  const back = kind === 'lib' && detailId === o.id ? '<button type="button" class="btn ghost" data-vact="piece-back">‹ Back to outfit</button>' : '<span></span>';
+  openViewer(SINGULAR[it.category] || 'Piece', body, `${back}<div class="dlg-foot-left">
+      <button type="button" class="btn" data-vact="piece-edit">✎ Edit item</button>
+      <button type="button" class="btn primary" data-vact="piece-swap">↔ Swap</button></div>`);
+}
+
+async function openSwap(o, kind, ref, itemId) {
   let r;
-  try { r = await api(`/api/library/${o.id}/swap?item_id=${itemId}`); } catch (e) { toast(e.message); return; }
-  viewerCtx = { swap: o, itemId };
-  const rows = r.options.map((x) => `<button type="button" class="swap-opt ${x.ok ? '' : 'bad'}" data-vact="swap-to" data-item="${x.item.id}">
-      ${thumb(x.item, 'sm')}<span><strong>${esc(x.item.name)}</strong>
-      <span class="why">${x.ok ? (x.item.in_laundry ? 'In the laundry right now' : 'Fits your rules') : esc(x.problems.join(' '))}</span></span></button>`).join('');
-  openViewer(`Swap: ${r.current.name}`,
-    `<div class="swap-list">${rows || '<div class="muted">Nothing else in this category yet.</div>'}</div>`,
-    r.removable ? '<span></span><div class="dlg-foot-left"><button type="button" class="btn danger-ghost" data-vact="swap-remove">Remove this piece</button></div>' : '');
+  try {
+    const saved = savedOf(o, kind);
+    r = saved
+      ? await api(`/api/library/${saved.id}/swap?item_id=${itemId}`)
+      : await api('/api/swap-options', sendJSON('POST', { item_ids: o.items.map((i) => i.id), item_id: itemId, occasion: state.occasion }));
+  } catch (e) { toast(e.message); return; }
+  viewerCtx = { swap: o, kind, ref, itemId, options: r.options };
+  const cards = r.options.map((x) => `<button type="button" class="swap-card ${x.ok ? '' : 'bad'}" data-vact="swap-to" data-item="${x.item.id}">
+      ${thumb(x.item)}<span class="swap-name">${esc(displayName(x.item))}</span>
+      <span class="why">${x.ok ? (x.item.in_laundry ? 'In the laundry right now' : 'Fits your rules') : esc(x.problems.join(' '))}</span></button>`).join('');
+  const now = `<div class="swap-now">${thumb(r.current)}<div><div class="muted small">Now</div><strong>${esc(displayName(r.current))}</strong></div></div>`;
+  openViewer(`Swap the ${SINGULAR[r.current.category]?.toLowerCase() || 'piece'}`,
+    `${now}<div class="swap-grid">${cards || '<div class="muted">Nothing else in this category yet.</div>'}</div>`,
+    `<button type="button" class="btn ghost" data-vact="swap-back">‹ Back</button>${r.removable ? '<div class="dlg-foot-left"><button type="button" class="btn danger-ghost" data-vact="swap-remove">Remove this piece</button></div>' : ''}`);
 }
 
 async function applySwap(newId) {
-  const { swap: o, itemId } = viewerCtx;
+  const { swap: o, kind, ref, itemId, options } = viewerCtx;
+  const newItem = newId ? options.find((x) => x.item.id === newId)?.item : null;
   const ids = o.items.map((i) => i.id).filter((id) => id !== itemId);
   if (newId) ids.push(newId);
+  const saved = savedOf(o, kind);
   try {
-    const r = await api(`/api/library/${o.id}`, sendJSON('PUT', { item_ids: ids, name: o.name, notes: o.notes, occasion: o.occasion }));
-    Object.assign(o, r);
-    if (detailId === o.id) openOutfit(o); else $('#viewer').close();
-    renderOutfits();
-    toast(r.warnings?.length ? `Changed. Note: ${r.warnings[0]}` : 'Changed');
+    if (saved) {
+      const r = await api(`/api/library/${saved.id}`, sendJSON('PUT', { item_ids: ids, name: saved.name, notes: saved.notes, occasion: saved.occasion }));
+      Object.assign(saved, r);
+      if (kind !== 'lib') o.items = r.items;
+      toast(r.warnings?.length ? `Changed. Note: ${r.warnings[0]}` : 'Changed');
+    } else {
+      // a new idea on Today: only this card changes; Save or Wear uses the new version
+      o.items = o.items.filter((i) => i.id !== itemId).concat(newItem ? [newItem] : []);
+      o.items.sort(byOrder);
+      toast('Changed');
+    }
+    if (kind === 'lib' && detailId === o.id) openOutfit(o); else $('#viewer').close();
+    if (kind === 'lib') renderOutfits(); else rerenderCard(kind, ref);
   } catch (e) { toast(e.message); }
 }
 
 async function viewerAction(act, btn) {
   if (act === 'swap-to') { applySwap(Number(btn.dataset.item)); return; }
   if (act === 'swap-remove') { applySwap(null); return; }
+  if (act === 'swap-back') {
+    const { swap: o, kind, ref, itemId } = viewerCtx;
+    openPiece(o, kind, ref, itemId);
+    return;
+  }
+  if (viewerCtx?.piece) {
+    const { o, kind, ref, itemId } = viewerCtx.piece;
+    if (act === 'piece-swap') { openSwap(o, kind, ref, itemId); return; }
+    if (act === 'piece-back') { openOutfit(o); return; }
+    if (act === 'piece-edit') {
+      const it = state.items.find((i) => i.id === itemId);
+      $('#viewer').close();
+      if (it) openItem(it);
+      return;
+    }
+  }
   const { o, kind, ref, ph } = viewerCtx || {};
   if (!ph) return;
   if (act === 'check') { if (ph.review) openReview(o, kind, ref, ph); else runCheck(o, kind, ref, ph); return; }
@@ -1109,7 +1186,7 @@ async function onOutfitTool(e) {
   else if (act === 'photo') pickOutfitPhoto(kind, o.id);
   else if (act === 'check') startCheck(kind, o.id);
   else if (act === 'view') openPhoto(o, kind, ref, Number(el.dataset.photo));
-  else if (act === 'swap') openSwap(o, Number(el.dataset.item));
+  else if (act === 'piece') openPiece(o, kind, ref, Number(el.dataset.item));
   else if (act === 'edit') openLog(o, 'lib');
   else if (act === 'wear') wearLib(o, el);
   else if (act === 'open') openOutfit(o);

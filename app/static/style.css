@@ -524,3 +524,32 @@ dialog form { display: flex; flex-direction: column; max-height: calc(100dvh - 2
 .swap-suggs { display: flex; flex-direction: column; gap: 6px; }
 .swap-sugg { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 12px; }
 .swap-sugg > span { display: flex; flex-direction: column; gap: 2px; }
+
+/* bigger pieces, piece details, swap grid */
+.outfit-items { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
+@media (max-width: 400px) { .outfit-items { grid-template-columns: repeat(2, 1fr); } }
+.outfit-items figcaption, .piece figcaption {
+  white-space: normal; font-size: 13px; line-height: 1.3; color: var(--text);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.piece-detail { display: flex; flex-direction: column; gap: 8px; }
+.piece-photo { border-radius: 16px; overflow: hidden; background: #f1ede6; aspect-ratio: 1; }
+.piece-photo img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.piece-photo .thumb { width: 100%; height: 100%; border-radius: 0; }
+.piece-photo .thumb.swatch span { font-size: 64px; }
+.piece-brand { font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--accent); }
+.piece-detail h3 { font-size: 20px; }
+.piece-facts { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 4px 0 0; font-size: 14px; }
+.piece-facts dt { color: var(--muted); font-weight: 600; }
+.piece-facts dd { margin: 0; }
+.swap-now { display: grid; grid-template-columns: 72px 1fr; gap: 12px; align-items: center; padding: 8px; border-radius: 14px; background: var(--surface-2); }
+.swap-now .thumb { width: 72px; }
+.swap-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+.swap-card {
+  appearance: none; border: 1px solid var(--line); background: var(--bg); color: var(--text); font: inherit; text-align: left;
+  border-radius: 14px; padding: 6px; cursor: pointer; display: flex; flex-direction: column; gap: 6px; min-width: 0;
+}
+.swap-card.bad { opacity: .6; }
+.swap-card .swap-name { font-weight: 600; font-size: 13px; line-height: 1.3; }
+.swap-card .why { font-size: 12px; color: var(--muted); }
+.swap-card.bad .why { color: var(--danger); }

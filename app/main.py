@@ -688,12 +688,12 @@ def fetch_outfits(conn, limit=200):
     ids = [o["id"] for o in outfits]
     marks = ",".join("?" for _ in ids)
     rows = conn.execute(
-        f"""SELECT oi.outfit_id, i.id, i.name, i.category, i.kind, i.color, i.photo, i.match_id, i.pair_only
+        f"""SELECT oi.outfit_id, i.id, i.name, i.brand, i.category, i.kind, i.color, i.photo, i.match_id, i.pair_only
             FROM outfit_items oi JOIN items i ON i.id = oi.item_id
             WHERE oi.outfit_id IN ({marks})""", ids).fetchall()
     by_outfit = {}
     for r in rows:
-        it = {"id": r["id"], "name": r["name"], "category": r["category"], "kind": r["kind"], "color": r["color"],
+        it = {"id": r["id"], "name": r["name"], "brand": r["brand"], "category": r["category"], "kind": r["kind"], "color": r["color"],
               "match_id": r["match_id"], "pair_only": bool(r["pair_only"]),
               "photo_url": f"/photos/{r['photo']}" if r["photo"] else None}
         by_outfit.setdefault(r["outfit_id"], []).append(it)
@@ -1002,25 +1002,45 @@ def add_library_photo(oid: int, photo: UploadFile = File(...), cutout_photo: boo
     return add_outfit_photo("saved_outfits", "saved_id", oid, photo, cutout_photo)
 
 
-@app.get("/api/library/{oid}/swap")
-def swap_options(oid: int, item_id: int):
-    """Other pieces that could replace item_id in this outfit, with any rules they'd break."""
-    with db() as conn:
-        o = library_entry(conn, oid)
-        current = next((i for i in o["items"] if i["id"] == item_id), None)
-        if current is None:
-            raise HTTPException(404, "That piece isn't in this outfit")
-        rest = [i for i in o["items"] if i["id"] != item_id]
-        in_outfit = {i["id"] for i in o["items"]}
-        options = []
-        for it in fetch_items(conn, "i.archived = 0 AND i.category = ?", (current["category"],)):
-            if it["id"] in in_outfit:
-                continue
-            problems = outfit_warnings(conn, rest + [it], o["occasion"])
-            options.append({"item": it, "ok": not problems, "problems": problems[:3]})
+def swap_choices(conn, items: list, item_id: int, occasion) -> dict:
+    """Other pieces that could replace item_id in an outfit, with any rules they'd break."""
+    current = next((i for i in items if i["id"] == item_id), None)
+    if current is None:
+        raise HTTPException(404, "That piece isn't in this outfit")
+    rest = [i for i in items if i["id"] != item_id]
+    in_outfit = {i["id"] for i in items}
+    options = []
+    for it in fetch_items(conn, "i.archived = 0 AND i.category = ?", (current["category"],)):
+        if it["id"] in in_outfit:
+            continue
+        problems = outfit_warnings(conn, rest + [it], occasion)
+        options.append({"item": it, "ok": not problems, "problems": problems[:3]})
     options.sort(key=lambda x: (not x["ok"], x["item"]["in_laundry"], x["item"]["name"].lower()))
     return {"current": current, "options": options,
             "removable": current["category"] in ("outerwear", "suit", "socks", "accessory")}
+
+
+@app.get("/api/library/{oid}/swap")
+def swap_options(oid: int, item_id: int):
+    with db() as conn:
+        o = library_entry(conn, oid)
+        return swap_choices(conn, o["items"], item_id, o["occasion"])
+
+
+class SwapIn(BaseModel):
+    item_ids: List[int]
+    item_id: int
+    occasion: Optional[int] = None
+
+
+@app.post("/api/swap-options")
+def swap_options_unsaved(body: SwapIn):
+    """The same for an outfit that isn't saved (a new idea on Today)."""
+    ids = list(dict.fromkeys(body.item_ids))
+    check_occasion(body.occasion)
+    with db() as conn:
+        check_items(conn, ids)
+        return swap_choices(conn, [get_item(conn, i) for i in ids], body.item_id, body.occasion)
 
 
 @app.get("/api/saved")

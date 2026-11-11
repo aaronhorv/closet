@@ -1552,7 +1552,8 @@ def ai_outfits(body: AIOutfitsIn):
         raise HTTPException(400, "Add some clean tops and bottoms (or dresses) first.")
 
     count = 3 if anchor else 5
-    temp = today_temp(settings)
+    # created outfits are for whatever you ask for ("summer wedding"), not for today's weather
+    temp = None
     try:
         raw = ai.build_outfits(list(allowed.values()), count, anchor, body.note, existing,
                               settings["ai_prompt"], rules=settings["rules"], history=history, temp=temp,
@@ -1567,7 +1568,10 @@ def ai_outfits(body: AIOutfitsIn):
     outfits = []
     for o in raw:
         occasion = o.get("occasion") if o.get("occasion") in (1, 2, 3) else 2
-        its = check_outfit(o.get("item_ids") or [], allowed, anchor["id"] if anchor else None,
+        ids = list(o.get("item_ids") or [])
+        if anchor and anchor["id"] not in ids:
+            ids.append(anchor["id"])  # the piece you built around always goes in (if the outfit still works)
+        its = check_outfit(ids, allowed, anchor["id"] if anchor else None,
                            rulebook.active(settings["rules"], occasion, temp),
                            (occasion, temp) if settings["menswear"] else None)
         if not its or recommender.history_key(its) in thrown:

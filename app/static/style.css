@@ -553,3 +553,9 @@ dialog form { display: flex; flex-direction: column; max-height: calc(100dvh - 2
 .swap-card .swap-name { font-weight: 600; font-size: 13px; line-height: 1.3; }
 .swap-card .why { font-size: 12px; color: var(--muted); }
 .swap-card.bad .why { color: var(--danger); }
+
+/* the coat, shown on its own */
+.wear-with { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 6px 8px; border-radius: 12px; background: var(--surface-2); }
+.wear-with .piece { flex-direction: row; align-items: center; gap: 8px; }
+.wear-with .thumb.sm { width: 44px; }
+.wear-with figcaption { -webkit-line-clamp: 1; }

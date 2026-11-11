@@ -589,14 +589,21 @@ function tool(act, label, kind, ref, cls = '', title = '') {
   return `<button type="button" class="tool-btn ${cls}" data-act="${act}" data-kind="${kind}" data-ref="${ref}" ${title ? `title="${title}" aria-label="${title}"` : ''}>${label}</button>`;
 }
 
+// The coat covers most of an outfit, so it's shown on its own: "Wear with: Camel coat".
+const isCoat = (it) => it.category === 'outerwear';
+function withoutCoat(items) { return items.filter((i) => !isCoat(i)); }
+
 function piecesHTML(o, kind, ref, tappable) {
-  return `<div class="outfit-items">${o.items.map((it) => {
-    const inner = `${thumb(it)}<figcaption>${esc(displayName(it))}</figcaption>`;
+  const piece = (it, extra = '') => {
     const dirty = it.in_laundry || it.archived ? 'dirty' : '';
+    const inner = `${thumb(it, extra)}<figcaption>${esc(displayName(it))}</figcaption>`;
     return tappable
       ? `<button type="button" class="piece ${dirty}" data-act="piece" data-kind="${kind}" data-ref="${ref}" data-item="${it.id}" title="Details and swap">${inner}</button>`
       : `<figure class="${dirty}">${inner}</figure>`;
-  }).join('')}</div>`;
+  };
+  const coats = o.items.filter(isCoat);
+  return `<div class="outfit-items">${withoutCoat(o.items).map((it) => piece(it)).join('')}</div>`
+    + (coats.length ? `<div class="wear-with"><span class="muted small">Wear with</span>${coats.map((it) => piece(it, 'sm')).join('')}</div>` : '');
 }
 
 function photosHTML(o, kind, ref) {
@@ -831,7 +838,10 @@ const FLAT_SPOTS = {
   top: [30, 4, 40, 36], layer: [50, 10, 38, 34], dress: [28, 4, 44, 62], suit: [4, 6, 38, 40],
   outerwear: [58, 3, 38, 42], bottom: [30, 40, 40, 44], shoes: [60, 76, 32, 20], socks: [8, 78, 22, 18],
 };
-function flatLayHTML(items, withNames = true) {
+function flatLayHTML(allItems, withNames = true) {
+  // the outfit itself; the coat is named underneath instead of covering it
+  const items = withoutCoat(allItems);
+  const coats = allItems.filter(isCoat);
   const tops = items.filter((i) => i.category === 'top');
   const acc = items.filter((i) => i.category === 'accessory');
   const outer = items.some((i) => i.category === 'outerwear');
@@ -849,7 +859,7 @@ function flatLayHTML(items, withNames = true) {
     const c = cssColor(it.color);
     return `<div class="fl sw" style="${pos};${c ? `--sw:${c}` : ''}" title="${esc(it.name)}">${CAT_ICON[it.category] || '•'}</div>`;
   }).join('');
-  return `<div class="flatlay">${html}</div>${withNames ? `<div class="flatlay-names">${items.map((i) => esc(displayName(i))).join(' · ')}</div>` : ''}`;
+  return `<div class="flatlay">${html}</div>${withNames ? `<div class="flatlay-names">${items.map((i) => esc(displayName(i))).join(' · ')}${coats.length ? `<br>Wear with: ${coats.map((i) => esc(displayName(i))).join(', ')}` : ''}</div>` : ''}`;
 }
 
 let viewerCtx = null;
@@ -1040,7 +1050,8 @@ async function tryOn(o, kind, ref, btn) {
   btn.disabled = true;
   btn.textContent = 'Creating… up to a minute';
   try {
-    const ph = await api('/api/tryon', sendJSON('POST', { item_ids: o.items.map((i) => i.id), saved_id: o.id }));
+    // try it on without the coat: how the outfit itself looks matters most
+    const ph = await api('/api/tryon', sendJSON('POST', { item_ids: withoutCoat(o.items).map((i) => i.id), saved_id: o.id }));
     o.photos = [...(o.photos || []), ph];
     rerenderCard(kind, ref);
     openPhoto(o, kind, ref, ph.id);

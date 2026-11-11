@@ -275,7 +275,8 @@ Rules for every outfit:
 - occasion: what the outfit is for: 1 casual (everyday), 2 smart casual (work), 3 formal (elegant).
 - The user's ground rules are strict: never break them.
 - Learn from the user's past outfits: repeat what they rated highly, avoid what they rated low, and follow their notes (on items and outfits).
-- Add shoes when the closet has any. Outerwear is optional.
+- Add shoes when the closet has any.
+- The outfits are not for today's weather: follow the occasion and season the user asks for (e.g. a summer wedding gets no coat). Only add outerwear when the request or season calls for it.
 - Socks and accessories in the closet are statement pieces. Plain neutral socks and basic accessories (a belt matching the shoes, a plain watch) are always available and must NOT be listed. Only include a catalogued sock or accessory when it genuinely improves the outfit (a pocket square with a jacket, a tie for a formal look, a scarf in the cold, patterned socks as the single playful touch of a calm casual or smart-casual look); otherwise leave them out.
 - Keep formality consistent (1 casual, 2 smart casual, 3 formal) and warmth roughly consistent (1 very light .. 5 very warm).
 - Colors: neutrals go with anything; prefer at most one bold accent color per outfit.
@@ -364,7 +365,12 @@ def build_outfits(items: list, count: int, anchor: dict = None, note: str = "",
         parts.append("\nExisting saved outfits (item ids), don't repeat these:")
         parts.extend(json.dumps(ids) for ids in existing[:30])
     if anchor:
-        parts.append(f"\nEvery outfit must include item {anchor['id']} ({anchor['name']}).")
+        parts.append(f"\nEvery outfit must include item {anchor['id']} ({anchor['name']}) and be built around it. "
+                     "This overrides the guidance that socks and accessories are optional.")
+        if anchor.get("kind") == "pocket square":
+            parts.append("A pocket square needs a blazer or suit jacket in the outfit.")
+        elif anchor.get("kind") == "tie":
+            parts.append("A tie needs a collared shirt, ideally with a jacket.")
     if style.strip():
         parts.append(f"\nThe user's standing style preferences (follow them unless they break the rules above):\n{style.strip()[:1000]}")
     if note.strip():
